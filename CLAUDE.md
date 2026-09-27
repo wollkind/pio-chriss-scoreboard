@@ -69,7 +69,7 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 | Check | Result |
 |---|---|
 | `pio run -e esp32s3` | builds, no warnings in project files. RAM 13.1 %, flash 12.3 % |
-| `pio run -e esp32s3 -t ota` against 127.0.0.1 | reuses the existing build, calls espota with the built `firmware.bin` (no board, so no response) |
+| `pio run -e esp32s3-ota -t upload --upload-port 127.0.0.1` | builds, runs espota with `.pio/build/esp32s3-ota/firmware.bin` (no board, so no response) |
 | Picker page in headless Chromium, against a mock `/api/config` and Sleeper replies saved with curl on 2026-09-27 | search, add 8, 9th refused, save POST body correct, reload uses the cached list (0 Sleeper requests) |
 | Sleeper endpoints with curl, 2026-09-27 (week 3) | state, player lists, per-player stats, `null` for a player with no game yet, DEF stats by team ID. CORS header present |
 | Panel layout | rendered offline from `glcdfont.c` (`docs/panel-preview.png`); fits 64 px |
@@ -91,3 +91,4 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.3.1:** fix: ESPN scoreboard parse failed with TooDeep; JSON nesting limit raised to 32
 - **v0.4:** all 9 players on one screen (7 px rows). Score lines and pages removed from the panel; possession is a brown football before the points. Default name size Medium.
 - **v0.4.1:** panel order is the order set on the web page (↑ and ↓ buttons) instead of by points.
+- **v0.4.2:** OTA is a plain `[env:esp32s3-ota]` again (`upload_protocol = espota`). The custom `ota` target from v0.2 (`scripts/ota.py`) was removed: the owner could not get it to run.

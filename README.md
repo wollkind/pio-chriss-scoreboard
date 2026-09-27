@@ -6,6 +6,8 @@ A live fantasy football scoreboard for a 64×64 HUB75 LED panel on the **Wavesha
 
 *Layout preview rendered with the panel's font; not a photo.*
 
+Plain-language instructions for guests (finding the board, picking players): [`GUIDE.md`](GUIDE.md).
+
 ## What it shows
 
 - **Rows:** one 8-pixel row per player, up to 8, sorted by points (highest first). Players with no stats yet go last.
@@ -111,6 +113,7 @@ Build output: RAM 13.1 % (43 KB static), flash 12.1 % (508 KB of the 4 MB app sl
 | `src/ESP32-HUB75-*`, `src/platforms/` | HUB75 panel driver vendored from Waveshare's Arduino examples (copied from infopanel64) |
 | `src/secrets.example.h` | template for `src/secrets.h` |
 | `partitions_32MB.csv` | flash layout (two 4 MB app slots) |
+| `GUIDE.md` | step-by-step guide for guests: opening the page and picking players |
 | `CLAUDE.md` | engineering notes and status |
 
 ## Credits and licences

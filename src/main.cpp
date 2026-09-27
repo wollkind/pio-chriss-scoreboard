@@ -1,16 +1,23 @@
 // pio-chriss-scoreboard: live fantasy football points on the Waveshare ESP32-S3-RGB-Matrix with a
 // 64x64 HUB75 panel.
 //
-// Up to 8 players, one 8-pixel row each: a position-coloured bar, a short label and this week's
-// fantasy points, sorted highest first. A row flashes green for a few seconds when its points change.
+// Up to 9 players, sorted by points (highest first). Each player gets a block: a position-coloured
+// bar, a label and this week's fantasy points, and underneath in a tiny font the score of that
+// player's NFL game, with a marker when the player's team has the ball. Blocks that don't fit on
+// one screen are split over pages that alternate every PAGE_MS. A player's points turn green for a
+// few seconds when they change.
 //
 // Players are picked on a web page served by the board (http://scoreboard.local/). The page's
 // JavaScript downloads Sleeper's player list itself, so the board never handles that 5 MB file; it
 // only stores the chosen IDs and labels (NVS, survives reboots).
 //
-// Points come from Sleeper (no API key). A background task on core 0 reads the current season and
-// week from /v1/state/nfl, then fetches each chosen player's stats for that week
-// (api.sleeper.com/stats/nfl/player/<id>, about 1 KB each) every POLL_MS.
+// Data, fetched by a background task on core 0 every POLL_MS:
+//   - Points: Sleeper (no API key). /v1/state/nfl gives the season and week, then each player's
+//     stats for that week (api.sleeper.com/stats/nfl/player/<id>, about 1 KB each).
+//   - Game scores and possession: ESPN's public scoreboard (one ~270 KB reply for the whole week,
+//     parsed as a stream through a filter, so only a few hundred bytes are kept).
+//
+// Boot plays a startup animation (startup.cpp) while WiFi connects.
 //
 // Display setup (HUB75 config, off-screen canvas, changed-pixel push) follows infopanel64.
 
@@ -24,9 +31,13 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
+#include <Fonts/TomThumb.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <algorithm>
 #include <cmath>
+#include "fonts/Font5x7.h"
+#include "fonts/FontSqueezed7.h"
+#include "startup.h"
 #include "web_page.h"
 
 #if __has_include("secrets.h")
@@ -46,19 +57,23 @@
 // ---- Behaviour ---------------------------------------------------------------------
 #define FRAME_MS           50      // ~20 fps; only changed pixels reach the panel
 #define DEFAULT_BRIGHTNESS 60      // 0-255, changeable on the web page
-#define MAX_PLAYERS        8
-#define ROW_H              8       // 8 rows x 8 px = 64
+#define MAX_PLAYERS        9
 #define LABEL_X            3       // after the 2 px position bar
-#define LABEL_CHARS        6       // default font is 6 px per character: 3 + 36 = 39
+#define LABEL_GAP          2       // minimum blank columns between the label and the points
+#define SCORE_H            5       // tiny score line under each player (TomThumb caps are 5 px)
 #define SORT_BY_POINTS     1       // 0: keep the order chosen on the web page
-#define FLASH_MS           8000    // a row whose points changed is drawn green this long
+#define FLASH_MS           8000    // points that changed are drawn green this long
+#define PAGE_MS            7000    // time on each page when the players need more than one
+#define SCORE_ALT_MS       3000    // live games alternate "score + opponent" and "score + clock"
+#define STARTUP_ANIMATION  1       // 0: skip the startup animation
 #define HOSTNAME           "scoreboard"
 
 // ---- Data ----------------------------------------------------------------------------
-#define POLL_MS            (60UL * 1000)        // one round of player fetches per minute
+#define POLL_MS            (30UL * 1000)        // one round of fetches (players + scoreboard)
 #define STATE_REFRESH_MS   (30UL * 60 * 1000)   // season/week check
 #define STALE_MS           (5UL * 60 * 1000)    // no successful round for this long: points grey
 #define HTTP_TIMEOUT_MS    10000
+#define MAX_GAMES          16
 
 static_assert(PANEL_W == PANEL_H, "quarter-turn rotation needs a square panel");
 
@@ -70,13 +85,43 @@ enum PointsState : int8_t {
 
 struct Player {
   char id[12];       // Sleeper player_id: digits for players, team abbreviation for defenses
-  char label[12];    // shown on the panel (first LABEL_CHARS characters)
+  char label[16];    // shown on the panel, cut to the width that fits
   char pos[4];
   char team[4];
   float pts;
   PointsState state;
   uint32_t changed_ms;   // millis() of the last points change, for the flash
 };
+
+enum GameState : uint8_t { GAME_PRE, GAME_LIVE, GAME_FINAL };
+
+struct Game {
+  char home[4];
+  char away[4];
+  int16_t home_score;
+  int16_t away_score;
+  GameState state;
+  bool halftime;
+  uint8_t period;
+  char clock[6];      // "4:12"
+  char kickoff[8];    // "1:00P", from ESPN's shortDetail
+  char poss[4];       // abbreviation of the team with the ball; empty when unknown or not live
+  bool red_zone;
+};
+
+// Name sizes offered on the web page. The label and points share a baseline; `height` is the row.
+struct RowFont {
+  const GFXfont *label;    // nullptr: Adafruit GFX's built-in 6x8 font
+  const GFXfont *points;
+  int8_t baseline;         // cursor y offset from the row top (0 for the built-in font)
+  int8_t height;
+};
+static const RowFont ROW_FONTS[] = {
+    {nullptr, nullptr, 0, 8},                                   // 0 Large: about 6 letters
+    {&Font5x7, &Font5x7, Font5x7_ASCENT, 7},                    // 1 Medium: about 7-8 letters
+    {&FontSqueezed7, &Font5x7, FontSqueezed7_ASCENT, 8},        // 2 Narrow: about 8-9 letters
+};
+static constexpr int NUM_ROW_FONTS = sizeof(ROW_FONTS) / sizeof(ROW_FONTS[0]);
 
 static MatrixPanel_I2S_DMA *display = nullptr;
 static GFXcanvas16 *canvas = nullptr;
@@ -92,13 +137,19 @@ static int g_count = 0;
 static uint32_t g_generation = 0;             // bumped on every roster change
 static char g_scoring[12] = "pts_ppr";        // pts_ppr, pts_half_ppr or pts_std
 static int g_brightness = DEFAULT_BRIGHTNESS;
+static int g_font = 0;                        // index into ROW_FONTS
 static char g_season[8] = "";
 static char g_season_type[12] = "regular";
 static int g_week = 0;
+static Game g_games[MAX_GAMES];
+static int g_game_count = 0;
+static bool g_have_games = false;
 static uint32_t g_last_ok_ms = 0;             // end of the last round with no errors
 static int g_status = 0;                      // last HTTP code, or negative for local errors
 
 static TaskHandle_t g_fetch_task = nullptr;
+static uint32_t g_startup_ms = 0;
+static bool g_startup_running = STARTUP_ANIMATION;
 
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -111,6 +162,12 @@ static const uint16_t COLOR_FLASH   = rgb565(80, 255, 120);
 static const uint16_t COLOR_DIM     = rgb565(80, 80, 80);
 static const uint16_t COLOR_WARN    = rgb565(255, 140, 0);
 static const uint16_t COLOR_INFO    = rgb565(120, 200, 240);
+static const uint16_t COLOR_SCORE_INFO = rgb565(110, 130, 160);   // opponent, quarter, kickoff time
+static const uint16_t COLOR_LEADING = rgb565(90, 230, 110);
+static const uint16_t COLOR_TRAILING = rgb565(255, 90, 80);
+static const uint16_t COLOR_TIED    = rgb565(220, 220, 220);
+static const uint16_t COLOR_BALL    = rgb565(255, 200, 0);
+static const uint16_t COLOR_RED_ZONE = rgb565(255, 40, 40);
 
 static uint16_t positionColor(const char *pos)
 {
@@ -126,6 +183,73 @@ static uint16_t positionColor(const char *pos)
 static void copyStr(char *dst, size_t size, const char *src)
 {
   strlcpy(dst, src ? src : "", size);
+}
+
+// ---- Games -----------------------------------------------------------------------------
+
+// Caller holds g_lock. The player's team is matched against both sides of each game.
+static const Game *findGame(const char *team)
+{
+  for (int i = 0; i < g_game_count; ++i) {
+    if (!strcmp(g_games[i].home, team) || !strcmp(g_games[i].away, team)) {
+      return &g_games[i];
+    }
+  }
+  return nullptr;
+}
+
+// The score line for one player's team, split into coloured parts so the panel and the web page
+// share it. `alt` picks the clock instead of the opponent for live games.
+struct ScoreLine {
+  bool has_ball;
+  bool red_zone;
+  char score[10];        // "17-10", own team first
+  uint16_t score_color;
+  char info[12];         // "@MIA", "Q3 4:12", "HALF", "F", "BYE", "@MIA 1:00P"
+};
+
+static bool scoreLine(const char *team, bool alt, ScoreLine &out)
+{
+  out = {};
+  if (!g_have_games || !team[0]) {
+    return false;
+  }
+  const Game *game = findGame(team);
+  if (!game) {
+    copyStr(out.info, sizeof(out.info), "BYE");
+    return true;
+  }
+  const bool home = !strcmp(game->home, team);
+  const char *opponent = home ? game->away : game->home;
+  char versus[8];
+  snprintf(versus, sizeof(versus), "%s%s", home ? "v" : "@", opponent);
+
+  if (game->state == GAME_PRE) {
+    snprintf(out.info, sizeof(out.info), "%s %s", versus, game->kickoff);
+    return true;
+  }
+  const int own = home ? game->home_score : game->away_score;
+  const int other = home ? game->away_score : game->home_score;
+  snprintf(out.score, sizeof(out.score), "%d-%d", own, other);
+  out.score_color = own > other ? COLOR_LEADING : (own < other ? COLOR_TRAILING : COLOR_TIED);
+  if (game->state == GAME_FINAL) {
+    snprintf(out.info, sizeof(out.info), "%s F", versus);
+    return true;
+  }
+  out.has_ball = game->poss[0] && !strcmp(game->poss, team);
+  out.red_zone = out.has_ball && game->red_zone;
+  if (game->halftime) {
+    copyStr(out.info, sizeof(out.info), alt ? "HALF" : versus);
+  } else if (alt) {
+    if (game->period > 4) {
+      snprintf(out.info, sizeof(out.info), "OT %s", game->clock);
+    } else {
+      snprintf(out.info, sizeof(out.info), "Q%d %s", game->period, game->clock);
+    }
+  } else {
+    copyStr(out.info, sizeof(out.info), versus);
+  }
+  return true;
 }
 
 // ---- Roster storage ----------------------------------------------------------------
@@ -144,7 +268,7 @@ static bool validId(const char *id)
   return true;
 }
 
-// Applies {"scoring": "...", "brightness": n, "players": [{id, label, pos, team}, ...]}.
+// Applies {"scoring", "brightness", "font", "players": [{id, label, pos, team}, ...]}.
 // Caller holds g_lock. Returns false (and changes nothing) on bad input.
 static bool applyConfig(JsonDocument &doc)
 {
@@ -183,6 +307,7 @@ static bool applyConfig(JsonDocument &doc)
     copyStr(g_scoring, sizeof(g_scoring), scoring);
   }
   g_brightness = std::min(255, std::max(1, doc["brightness"] | g_brightness));
+  g_font = std::min(NUM_ROW_FONTS - 1, std::max(0, doc["font"] | g_font));
 
   memcpy(g_players, next, sizeof(g_players));
   g_count = n;
@@ -195,6 +320,7 @@ static void configToJson(JsonDocument &doc, bool with_points)
 {
   doc["scoring"] = g_scoring;
   doc["brightness"] = g_brightness;
+  doc["font"] = g_font;
   JsonArray list = doc["players"].to<JsonArray>();
   for (int i = 0; i < g_count; ++i) {
     const Player &p = g_players[i];
@@ -210,6 +336,16 @@ static void configToJson(JsonDocument &doc, bool with_points)
         o["pts"] = nullptr;
       }
       o["state"] = static_cast<int>(p.state);
+      ScoreLine line;
+      if (scoreLine(p.team, false, line)) {
+        ScoreLine clock;
+        scoreLine(p.team, true, clock);
+        char text[48];
+        snprintf(text, sizeof(text), "%s%s%s%s%s%s", line.has_ball ? "(ball) " : "", line.score,
+                 line.score[0] ? " " : "", line.info,
+                 strcmp(clock.info, line.info) ? " \xC2\xB7 " : "", strcmp(clock.info, line.info) ? clock.info : "");
+        o["game"] = text;
+      }
     }
   }
 }
@@ -240,17 +376,18 @@ static void loadConfig()
   xSemaphoreGive(g_lock);
 }
 
-// ---- Sleeper -----------------------------------------------------------------------
+// ---- Fetching --------------------------------------------------------------------------
 
-// GET url into doc (optionally through a filter). Returns the HTTP code, or -1 begin failed,
-// -2 JSON parse error.
-static int getJson(const char *url, JsonDocument &doc, JsonDocument *filter)
+// GET url into doc (optionally through a filter). With `stream`, the body is parsed straight off
+// the connection instead of being buffered first (for the large ESPN reply). Returns the HTTP code,
+// or -1 begin failed, -2 JSON parse error.
+static int getJson(const char *url, JsonDocument &doc, JsonDocument *filter, bool stream = false)
 {
   WiFiClientSecure client;
   client.setInsecure();   // public read-only data; skips shipping a CA bundle
   HTTPClient http;
   // HTTP/1.0: plain body and the server closes (see the infopanel64 v4.1 note on chunked replies
-  // timing out in HTTPClient).
+  // timing out in HTTPClient). It also makes the stream parse below see only the JSON.
   http.useHTTP10(true);
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
   if (!http.begin(client, url)) {
@@ -263,11 +400,17 @@ static int getJson(const char *url, JsonDocument &doc, JsonDocument *filter)
     http.end();
     return code;
   }
-  const String body = http.getString();
-  http.end();
-  const DeserializationError err = filter
-                                     ? deserializeJson(doc, body, DeserializationOption::Filter(*filter))
-                                     : deserializeJson(doc, body);
+  DeserializationError err;
+  if (stream) {
+    err = filter ? deserializeJson(doc, http.getStream(), DeserializationOption::Filter(*filter))
+                 : deserializeJson(doc, http.getStream());
+    http.end();
+  } else {
+    const String body = http.getString();
+    http.end();
+    err = filter ? deserializeJson(doc, body, DeserializationOption::Filter(*filter))
+                 : deserializeJson(doc, body);
+  }
   return err ? -2 : code;
 }
 
@@ -323,6 +466,97 @@ static bool fetchPlayer(const char *id, const char *scoring, const char *season,
   return true;
 }
 
+// ESPN abbreviations match Sleeper's except Washington.
+static void toSleeperTeam(char *dst, size_t size, const char *espn)
+{
+  copyStr(dst, size, strcmp(espn, "WSH") ? espn : "WAS");
+}
+
+// "9/27 - 1:00 PM EDT" -> "1:00P". Falls back to the first characters of the text.
+static void parseKickoff(char *dst, size_t size, const char *detail)
+{
+  const char *dash = strstr(detail, " - ");
+  if (dash) {
+    int hour = 0, minute = 0;
+    char ampm[3] = "";
+    if (sscanf(dash + 3, "%d:%d %2s", &hour, &minute, ampm) == 3) {
+      snprintf(dst, size, "%d:%02d%c", hour, minute, ampm[0]);
+      return;
+    }
+  }
+  copyStr(dst, size, detail);
+}
+
+// ESPN scoreboard for the current week. Only these fields survive the filter:
+//   events[].competitions[0].competitors[].{homeAway, score, team.{id, abbreviation}}
+//   events[].competitions[0].status.{period, displayClock, type.{name, state, shortDetail}}
+//   events[].competitions[0].situation.{possession, isRedZone}   (live games only)
+static bool fetchScoreboard()
+{
+  JsonDocument filter;
+  JsonObject comp = filter["events"][0]["competitions"][0].to<JsonObject>();
+  JsonObject team = comp["competitors"][0].to<JsonObject>();
+  team["homeAway"] = true;
+  team["score"] = true;
+  team["team"]["id"] = true;
+  team["team"]["abbreviation"] = true;
+  comp["status"]["period"] = true;
+  comp["status"]["displayClock"] = true;
+  comp["status"]["type"]["name"] = true;
+  comp["status"]["type"]["state"] = true;
+  comp["status"]["type"]["shortDetail"] = true;
+  comp["situation"]["possession"] = true;
+  comp["situation"]["isRedZone"] = true;
+
+  JsonDocument doc;
+  const int code = getJson("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+                           doc, &filter, true);
+  if (code != HTTP_CODE_OK) {
+    g_status = code;
+    return false;
+  }
+
+  Game games[MAX_GAMES] = {};
+  int n = 0;
+  for (JsonObject event : doc["events"].as<JsonArray>()) {
+    if (n >= MAX_GAMES) {
+      break;
+    }
+    JsonObject c = event["competitions"][0];
+    Game &game = games[n];
+    const char *poss_id = c["situation"]["possession"] | "";
+    for (JsonObject side : c["competitors"].as<JsonArray>()) {
+      const bool home = !strcmp(side["homeAway"] | "", "home");
+      char abbr[4];
+      toSleeperTeam(abbr, sizeof(abbr), side["team"]["abbreviation"] | "");
+      const int score = atoi(side["score"] | "0");
+      copyStr(home ? game.home : game.away, 4, abbr);
+      (home ? game.home_score : game.away_score) = score;
+      if (poss_id[0] && !strcmp(side["team"]["id"] | "", poss_id)) {
+        copyStr(game.poss, sizeof(game.poss), abbr);
+      }
+    }
+    JsonObject status = c["status"];
+    const char *state = status["type"]["state"] | "pre";
+    game.state = !strcmp(state, "in") ? GAME_LIVE : (!strcmp(state, "post") ? GAME_FINAL : GAME_PRE);
+    game.halftime = !strcmp(status["type"]["name"] | "", "STATUS_HALFTIME");
+    game.period = status["period"] | 0;
+    copyStr(game.clock, sizeof(game.clock), status["displayClock"] | "");
+    parseKickoff(game.kickoff, sizeof(game.kickoff), status["type"]["shortDetail"] | "");
+    game.red_zone = c["situation"]["isRedZone"] | false;
+    if (game.home[0] && game.away[0]) {
+      ++n;
+    }
+  }
+
+  xSemaphoreTake(g_lock, portMAX_DELAY);
+  memcpy(g_games, games, sizeof(g_games));
+  g_game_count = n;
+  g_have_games = true;
+  xSemaphoreGive(g_lock);
+  return true;
+}
+
 static void fetchTask(void *)
 {
   uint32_t last_state_ms = 0;
@@ -357,7 +591,7 @@ static void fetchTask(void *)
     week = g_week;
     xSemaphoreGive(g_lock);
 
-    bool all_ok = true;
+    bool all_ok = count == 0 || fetchScoreboard();
     for (int i = 0; i < count; ++i) {
       float pts = 0.0f;
       PointsState state = PTS_UNKNOWN;
@@ -420,7 +654,7 @@ static void handlePostConfig()
   const bool ok = applyConfig(doc);
   xSemaphoreGive(g_lock);
   if (!ok) {
-    server.send(400, "text/plain", "at most 8 players, each with an alphanumeric id");
+    server.send(400, "text/plain", "at most 9 players, each with an alphanumeric id");
     return;
   }
   saveConfig();
@@ -436,10 +670,26 @@ static void drawTextCentered(const char *text, int y, uint16_t color)
 {
   int16_t bx, by;
   uint16_t bw, bh;
+  canvas->setFont(nullptr);
   canvas->getTextBounds(text, 0, y, &bx, &by, &bw, &bh);
   canvas->setTextColor(color);
   canvas->setCursor((PANEL_W - static_cast<int>(bw)) / 2, y);
   canvas->print(text);
+}
+
+// Width in pixels from the cursor to the right edge of the ink, in the canvas's current font.
+static int inkWidth(const char *text, const GFXfont *font)
+{
+  if (!text[0]) {
+    return 0;
+  }
+  int16_t bx, by;
+  uint16_t bw, bh;
+  canvas->getTextBounds(text, 0, 32, &bx, &by, &bw, &bh);
+  if (!font) {
+    return static_cast<int>(bw) - 1;   // the built-in font's last column is blank spacing
+  }
+  return bw ? bx + static_cast<int>(bw) : 0;
 }
 
 static void formatPoints(char *out, size_t size, float pts)
@@ -460,9 +710,83 @@ static void drawStatus(const char *line1, uint16_t c1, const char *line2, uint16
   }
 }
 
+// Possession marker: a tiny football, 4x3, yellow (red inside the opponent's 20).
+static void drawBallMarker(int x, int y, bool red_zone)
+{
+  const uint16_t c = red_zone ? COLOR_RED_ZONE : COLOR_BALL;
+  canvas->drawFastHLine(x + 1, y, 2, c);
+  canvas->drawFastHLine(x, y + 1, 4, c);
+  canvas->drawFastHLine(x + 1, y + 2, 2, c);
+}
+
+// One player: name row (label + points), then the tiny score line under it.
+static void drawPlayer(const Player &p, int y, const RowFont &rf, bool stale, uint32_t now)
+{
+  const int block_h = rf.height + SCORE_H;
+  canvas->fillRect(0, y, 2, block_h - 1, positionColor(p.pos));
+
+  // Points, right-aligned to the panel edge.
+  char pts[8];
+  uint16_t color = COLOR_POINTS;
+  if (p.state == PTS_OK) {
+    formatPoints(pts, sizeof(pts), p.pts);
+    if (p.changed_ms && now - p.changed_ms < FLASH_MS) {
+      color = COLOR_FLASH;
+    }
+  } else {
+    snprintf(pts, sizeof(pts), "-");   // no stats yet this week (or not fetched yet)
+    color = COLOR_DIM;
+  }
+  if (stale && p.state != PTS_UNKNOWN) {
+    color = COLOR_DIM;
+  }
+  canvas->setFont(rf.points);
+  const int pts_x = PANEL_W - inkWidth(pts, rf.points);
+  canvas->setTextColor(color);
+  canvas->setCursor(pts_x, y + rf.baseline);
+  canvas->print(pts);
+
+  // Label: as many characters as fit before the points.
+  canvas->setFont(rf.label);
+  char label[sizeof(Player::label)];
+  copyStr(label, sizeof(label), p.label);
+  const int max_w = pts_x - LABEL_GAP - LABEL_X;
+  for (size_t n = strlen(label); n > 0 && inkWidth(label, rf.label) > max_w; --n) {
+    label[n - 1] = '\0';
+  }
+  canvas->setTextColor(COLOR_TEXT);
+  canvas->setCursor(LABEL_X, y + rf.baseline);
+  canvas->print(label);
+
+  // Score line, TomThumb: [ball] 17-10 @MIA (or the clock, alternating).
+  ScoreLine line;
+  xSemaphoreTake(g_lock, portMAX_DELAY);
+  const bool have = scoreLine(p.team, (now / SCORE_ALT_MS) % 2 == 1, line);
+  xSemaphoreGive(g_lock);
+  if (!have) {
+    return;
+  }
+  const int top = y + rf.height;
+  int x = LABEL_X;
+  if (line.has_ball) {
+    drawBallMarker(x, top + 1, line.red_zone);
+  }
+  x += 5;   // the column stays reserved so the score doesn't jump when possession changes
+  canvas->setFont(&TomThumb);
+  canvas->setCursor(x, top + SCORE_H);
+  if (line.score[0]) {
+    canvas->setTextColor(stale ? COLOR_DIM : line.score_color);
+    canvas->print(line.score);
+    canvas->print(' ');
+  }
+  canvas->setTextColor(COLOR_SCORE_INFO);
+  canvas->print(line.info);
+}
+
 static void drawScreen(uint32_t now)
 {
   canvas->fillScreen(0);
+  canvas->setFont(nullptr);
   canvas->setTextSize(1);
 
   if (strlen(WIFI_SSID) == 0) {
@@ -475,10 +799,11 @@ static void drawScreen(uint32_t now)
   }
 
   Player rows[MAX_PLAYERS];
-  int count;
+  int count, font;
   xSemaphoreTake(g_lock, portMAX_DELAY);
   memcpy(rows, g_players, sizeof(rows));
   count = g_count;
+  font = g_font;
   xSemaphoreGive(g_lock);
 
   if (count == 0) {
@@ -505,38 +830,28 @@ static void drawScreen(uint32_t now)
     });
   }
 
+  // Pages: as many blocks as fit above the page-dot row, spread evenly (9 at 5 per page: 5 + 4).
+  const RowFont &rf = ROW_FONTS[font];
+  const int block_h = rf.height + SCORE_H;
+  const int fit = std::max(1, (PANEL_H - 1) / block_h);
+  const int pages = (count + fit - 1) / fit;
+  const int per_page = (count + pages - 1) / pages;
+  const int page = pages > 1 ? static_cast<int>((now / PAGE_MS) % pages) : 0;
+  const int first = page * per_page;
+  const int last = std::min(count, first + per_page);
+
   const bool stale = g_last_ok_ms == 0 || now - g_last_ok_ms > STALE_MS;
-  for (int i = 0; i < count; ++i) {
-    const Player &p = rows[i];
-    const int y = i * ROW_H;
-    canvas->fillRect(0, y, 2, ROW_H - 1, positionColor(p.pos));
+  for (int i = first; i < last; ++i) {
+    drawPlayer(rows[i], (i - first) * block_h, rf, stale, now);
+  }
+  canvas->setFont(nullptr);
 
-    char label[LABEL_CHARS + 1];
-    snprintf(label, sizeof(label), "%s", p.label);
-    canvas->setTextColor(COLOR_TEXT);
-    canvas->setCursor(LABEL_X, y);
-    canvas->print(label);
-
-    char pts[8];
-    uint16_t color = COLOR_POINTS;
-    if (p.state == PTS_OK) {
-      formatPoints(pts, sizeof(pts), p.pts);
-      if (p.changed_ms && now - p.changed_ms < FLASH_MS) {
-        color = COLOR_FLASH;
-      }
-    } else {
-      snprintf(pts, sizeof(pts), "-");   // no stats yet this week (or not fetched yet)
-      color = COLOR_DIM;
+  // Page dots, bottom row, centred.
+  if (pages > 1) {
+    const int x0 = (PANEL_W - (pages * 3 - 1)) / 2;
+    for (int k = 0; k < pages; ++k) {
+      canvas->drawFastHLine(x0 + k * 3, PANEL_H - 1, 2, k == page ? COLOR_TEXT : COLOR_DIM);
     }
-    if (stale && p.state != PTS_UNKNOWN) {
-      color = COLOR_DIM;
-    }
-    int16_t bx, by;
-    uint16_t bw, bh;
-    canvas->getTextBounds(pts, 0, y, &bx, &by, &bw, &bh);
-    canvas->setTextColor(color);
-    canvas->setCursor(PANEL_W - static_cast<int>(bw) + 1, y);   // the font's trailing column is blank
-    canvas->print(pts);
   }
 
   // Fetch problem: one red pixel in the bottom-right corner.
@@ -679,9 +994,13 @@ void setup()
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(HOSTNAME);
     WiFi.setAutoReconnect(true);
+    // No modem sleep: with it, every reply waits for the access point's next beacon, which made
+    // OTA (1 KB per round trip) crawl.
+    WiFi.setSleep(false);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     xTaskCreatePinnedToCore(fetchTask, "fetch", 12288, nullptr, 1, &g_fetch_task, 0);
   }
+  g_startup_ms = millis();
 }
 
 void loop()
@@ -690,7 +1009,12 @@ void loop()
 
   serviceNetwork();
   updateBrightness();
-  drawScreen(now);
+  if (g_startup_running) {
+    g_startup_running = drawStartup(*canvas, now - g_startup_ms);
+  }
+  if (!g_startup_running) {
+    drawScreen(now);
+  }
   present();
 
   const uint32_t spent = millis() - now;

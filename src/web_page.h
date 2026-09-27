@@ -24,7 +24,8 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   #results li:hover { background: #1c1c1c; }
   #roster li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
   #roster .who { flex: 1; min-width: 0; }
-  #roster .label { width: 7ch; }
+  #roster .label { width: 9ch; }
+  #roster .game { font-size: 12px; }
   #roster .pts { width: 5ch; text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
   .pos { display: inline-block; width: 4.2ch; font-size: 12px; font-weight: 700; }
   .QB { color: #ff4646; } .RB { color: #3cdc5a; } .WR { color: #4696ff; } .TE { color: #ffa028; } .K { color: #c86eff; } .DEF { color: #a0a0a0; }
@@ -37,7 +38,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <h1>Scoreboard</h1>
 <div class="meta" id="meta">Loading...</div>
 
-<h2 style="font-size:16px">On the panel (<span id="count">0</span>/8)</h2>
+<h2 style="font-size:16px">On the panel (<span id="count">0</span>/9)</h2>
 <ul id="roster"></ul>
 
 <div class="row">
@@ -46,6 +47,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
       <option value="pts_ppr">PPR</option>
       <option value="pts_half_ppr">Half PPR</option>
       <option value="pts_std">Standard</option>
+    </select>
+  </label>
+  <label>Name size
+    <select id="font">
+      <option value="0">Large (about 6 letters)</option>
+      <option value="1">Medium (about 7-8 letters)</option>
+      <option value="2">Narrow (about 8-9 letters)</option>
     </select>
   </label>
   <label>Brightness <input id="brightness" type="range" min="5" max="255"></label>
@@ -59,7 +67,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <p class="dim" id="listinfo"></p>
 
 <script>
-const MAX = 8;
+const MAX = 9;
 const CACHE_KEY = 'sleeper_players_v1';
 const CACHE_MS = 24 * 3600 * 1000;           // Sleeper asks for the player list at most once a day
 const POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
@@ -80,7 +88,7 @@ function el(tag, attrs, ...kids) {
 function defaultLabel(p) {
   if (p.pos === 'DEF') return p.team + ' D';
   const parts = p.name.split(' ').filter(w => !/^(jr\.?|sr\.?|ii|iii|iv|v)$/i.test(w));
-  return (parts[parts.length - 1] || p.name).slice(0, 6);
+  return parts[parts.length - 1] || p.name;
 }
 
 // Sleeper's /v1/players/nfl, filtered per position so each reply is small, trimmed to what the
@@ -114,7 +122,7 @@ function renderRoster() {
   ul.replaceChildren();
   if (!roster.length) ul.append(el('li', { className: 'dim', textContent: 'No players yet.' }));
   roster.forEach((p, i) => {
-    const label = el('input', { className: 'label', value: p.label, maxLength: 11, title: 'Label on the panel (6 characters show)' });
+    const label = el('input', { className: 'label', value: p.label, maxLength: 15, title: 'Name on the panel; letters that do not fit are cut off' });
     label.oninput = () => { p.label = label.value; setDirty(); };
     const up = el('button', { textContent: '↑', title: 'Move up', disabled: i === 0 });
     up.onclick = () => { [roster[i - 1], roster[i]] = [roster[i], roster[i - 1]]; setDirty(); renderRoster(); };
@@ -123,6 +131,7 @@ function renderRoster() {
     const who = el('span', { className: 'who' },
       el('span', { className: 'pos ' + p.pos, textContent: p.pos }), (p.name || p.id) + ' ',
       el('span', { className: 'dim', textContent: p.team }));
+    if (p.game) who.append(el('div', { className: 'game dim', textContent: p.game }));
     const pts = el('span', { className: 'pts', textContent: p.pts == null ? '-' : p.pts.toFixed(1) });
     ul.append(el('li', {}, who, label, pts, up, rm));
   });
@@ -139,7 +148,7 @@ function renderResults() {
     const li = el('li', {}, el('span', { className: 'pos ' + p.pos, textContent: p.pos }), p.name + ' ',
       el('span', { className: 'dim', textContent: p.team }));
     li.onclick = () => {
-      if (roster.length >= MAX) { $('msg').textContent = 'The panel shows at most 8 players.'; return; }
+      if (roster.length >= MAX) { $('msg').textContent = 'The panel shows at most 9 players.'; return; }
       roster.push({ id: p.id, label: defaultLabel(p), pos: p.pos, team: p.team, name: p.name, pts: null });
       $('search').value = '';
       setDirty(); renderRoster(); renderResults();
@@ -164,10 +173,11 @@ function applyServer(cfg, replaceRoster) {
     roster = cfg.players.map(p => ({ ...p, name: nameFor(p.id) }));
     $('scoring').value = cfg.scoring;
     $('brightness').value = cfg.brightness;
+    $('font').value = cfg.font;
   } else {
     for (const p of roster) {
       const s = cfg.players.find(q => q.id === p.id);
-      if (s) p.pts = s.pts;
+      if (s) { p.pts = s.pts; p.game = s.game; }
     }
   }
   renderRoster();
@@ -184,6 +194,7 @@ $('save').onclick = async () => {
   const body = {
     scoring: $('scoring').value,
     brightness: +$('brightness').value,
+    font: +$('font').value,
     players: roster.map(({ id, label, pos, team }) => ({ id, label: label.trim() || id, pos, team })),
   };
   $('msg').textContent = 'Saving...';
@@ -197,6 +208,7 @@ $('save').onclick = async () => {
 };
 $('scoring').onchange = setDirty;
 $('brightness').onchange = setDirty;
+$('font').onchange = setDirty;
 $('search').oninput = renderResults;
 
 (async () => {

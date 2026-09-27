@@ -1,6 +1,6 @@
 # pio-chriss-scoreboard
 
-A live fantasy football scoreboard for a 64×64 HUB75 LED panel on the **Waveshare ESP32-S3-RGB-Matrix** board. It shows up to 8 chosen players and their fantasy points for the current NFL week. The players are picked on a web page served by the board.
+A live fantasy football scoreboard for a 64×64 HUB75 LED panel on the **Waveshare ESP32-S3-RGB-Matrix** board. It shows up to 9 chosen players, their fantasy points for the current NFL week, and the live score of each player's game. The players are picked on a web page served by the board.
 
 ![Panel layout preview](docs/panel-preview.png)
 
@@ -10,11 +10,32 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 
 ## What it shows
 
-- **Rows:** one 8-pixel row per player, up to 8, sorted by points (highest first). Players with no stats yet go last.
-- **Each row:**
-  - a 2 px position bar: QB red, RB green, WR blue, TE orange, K purple, DEF grey
-  - a label of up to 6 characters, editable on the web page
+- **Startup:** a football is kicked through the goalposts, a rainbow pinwheel spins up and dissolves into confetti, and the panel says "GOOD AFTERNOON CHAMPIONS !!!" (about 9 s, while WiFi connects). `STARTUP_ANIMATION 0` skips it.
+- **Players:** up to 9, sorted by points (highest first). Players with no stats yet go last.
+- **Each player** is a block:
+  - a position bar on the left: QB red, RB green, WR blue, TE orange, K purple, DEF grey
+  - the label (editable on the web page), cut to whatever fits
   - this week's points, right-aligned
+  - underneath, in a tiny font, the player's game:
+
+    | Game state | Shown |
+    |---|---|
+    | not started | `@MIA 1:00P` (`v` for a home game, `@` for away) |
+    | live | `17-10 @MIA`, alternating every 3 s with `17-10 Q3 4:12` (or `HALF`, `OT`) |
+    | live, player's team has the ball | a small yellow football before the score; red inside the opponent's 20 |
+    | final | `35-14 @GB F` |
+    | no game this week | `BYE` |
+
+    The score is the player's team first, green when leading, red when trailing.
+- **Name size**, chosen on the web page:
+
+  | Setting | Font | Letters that fit (typical) | Players per page |
+  |---|---|---|---|
+  | Large | built-in 6×8 | about 6 | 4 |
+  | Medium | X11 5×7 | about 7–8 | 5 |
+  | Narrow | u8g2 "squeezed" 7 px, proportional | about 8–9 | 4 |
+
+- **Pages:** when the players don't fit on one screen, they are split evenly over pages that switch every 7 s (9 players on Medium: 5 + 4). Dots on the bottom row show the page.
 - **Points:**
   - `-` in grey: no stats this week yet (game not started, or bye)
   - green for 8 s after a change
@@ -33,7 +54,7 @@ Plain-language instructions for guests (finding the board, picking players): [`G
    pio run -e esp32s3 -t upload
    ```
 3. Open `http://scoreboard.local/` on a phone on the same WiFi, or use the IP shown on the panel.
-4. Search for players, add up to 8, pick the scoring format (PPR, half PPR, standard), and press **Save to panel**.
+4. Search for players, add up to 9, pick the name size and the scoring format (PPR, half PPR, standard), and press **Save to panel**.
 
 The roster, scoring format and brightness are stored in NVS and survive reboots.
 
@@ -71,27 +92,31 @@ The stats endpoint is the one the Sleeper app itself uses. It is not in Sleeper'
   ```
 - **Parsing:** ArduinoJson parses with a filter, so only `stats.<scoring field>` is kept.
 
+**Game scores: ESPN.** `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard` returns every game of the current week in one reply: teams, scores, status, quarter and clock. During a live game it also has `situation.possession` (the ID of the team with the ball) and `situation.isRedZone`. The endpoint is public, needs no key, and is not officially documented by ESPN.
+- **Team codes:** ESPN's match Sleeper's except Washington (`WSH` at ESPN, `WAS` at Sleeper). The firmware converts it.
+- **Unverified:** the `situation` fields were not present in the reply checked on 2026-09-27, because no game was live at the time. Their names follow the commonly published format of this endpoint.
+
 **Player IDs.** Sleeper's `player_id` is a string. It is digits for players (`"4046"` is Patrick Mahomes) and the team abbreviation for team defenses (`"GB"`). The same ID works in every Sleeper endpoint. The player list also carries `espn_id`, `yahoo_id`, `gsis_id` (NFL) and `sportradar_id`, for cross-referencing other sources.
 
-**Timeliness (unverified).** Sleeper's CDN caches the weekly stats reply for 4 s (`cache-control: s-maxage=4`), and the player-list reply for 600 s. How soon points move after a play has not yet been measured during a live game. The firmware polls once a minute (`POLL_MS`).
+**Timeliness (unverified).** Sleeper's CDN caches the weekly stats reply for 4 s (`cache-control: s-maxage=4`), and the player-list reply for 600 s. How soon points move after a play has not yet been measured during a live game. The firmware polls every 30 s (`POLL_MS`).
 
 ## Load on the ESP32-S3
 
 Small. Each poll round is:
-- one HTTPS GET per player, at most 8, each about 1 KB
-- parsed with a filter, so the JSON document holds a single number
+- one HTTPS GET per player, at most 9, each about 1 KB, parsed with a filter so the JSON document holds a single number
+- one HTTPS GET of ESPN's scoreboard, about 270 KB, parsed as a stream straight off the connection through a filter, so it is never held in memory whole
 
-That runs in a background task on core 0, once a minute. Each request opens a new TLS connection (HTTP/1.0, see below), which takes on the order of a second, so a full round takes a few seconds. The display and web server stay responsive on core 1 during a round.
+That runs in a background task on core 0, every 30 s. Each request opens a new TLS connection (HTTP/1.0, see below), which takes on the order of a second, so a full round takes a few seconds. The display and web server stay responsive on core 1 during a round.
 
-Build output: RAM 13.1 % (43 KB static), flash 12.1 % (508 KB of the 4 MB app slot).
+Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app slot).
 
 ## Web API
 
 | Method | Path | Body / reply |
 |---|---|---|
 | GET | `/` | the picker page |
-| GET | `/api/config` | `{scoring, brightness, players:[{id,label,pos,team,pts,state}], season, season_type, week, status, last_ok_s}` |
-| POST | `/api/config` | `{scoring, brightness, players:[{id,label,pos,team}]}`, at most 8 players; replies like GET |
+| GET | `/api/config` | `{scoring, brightness, font, players:[{id,label,pos,team,pts,state,game}], season, season_type, week, status, last_ok_s}` |
+| POST | `/api/config` | `{scoring, brightness, font, players:[{id,label,pos,team}]}`, at most 9 players; replies like GET |
 
 `state`: 0 not fetched yet, 1 no stats this week, 2 points valid. `status`: the last HTTP code, or −1 begin failed, −2 JSON parse error, −3 unexpected state reply.
 
@@ -100,9 +125,11 @@ Build output: RAM 13.1 % (43 KB static), flash 12.1 % (508 KB of the 4 MB app sl
 - **Setup:** set `OTA_PASSWORD` in `src/secrets.h`, and put the same value in the `SCOREBOARD_OTA_PASSWORD` environment variable.
 - **Upload:**
   ```
-  pio run -e esp32s3-ota -t upload
+  pio run -e esp32s3 -t ota
   ```
-- **Details:** the mechanism and troubleshooting are the same as in infopanel64's `OTA.md`.
+  This builds only if something changed, then sends the same `firmware.bin` a USB upload would use. The `ota` target comes from `scripts/ota.py`. Earlier versions had a separate `esp32s3-ota` environment, and PlatformIO builds every environment in its own folder, so the first OTA upload recompiled everything.
+- **Address:** `scoreboard.local` by default. If that doesn't resolve, set `SCOREBOARD_HOST` to the panel's IP.
+- **Speed:** the firmware turns off WiFi modem sleep (`WiFi.setSleep(false)`). espota sends 1 KB at a time and waits for the board to answer each block. With modem sleep on, each answer can wait for the access point's next beacon (typically about 100 ms), so a 520 KB image took minutes. The upload also runs without espota's `--debug`, which PlatformIO's built-in OTA upload adds and which printed a "Chunk response" line for every block. The improved speed has not been measured on hardware yet.
 
 ## Repository layout
 
@@ -110,6 +137,9 @@ Build output: RAM 13.1 % (43 KB static), flash 12.1 % (508 KB of the 4 MB app sl
 |---|---|
 | `src/main.cpp` | the application: display, Sleeper fetch task, web server, OTA |
 | `src/web_page.h` | the player picker page (HTML + JavaScript, served from flash) |
+| `src/startup.cpp`, `src/startup.h` | startup animation |
+| `src/fonts/` | Medium and Narrow fonts as Adafruit GFX headers, generated by `tools/bdf2gfx.py` from `tools/fonts/*.bdf` |
+| `scripts/ota.py` | PlatformIO `ota` target |
 | `src/ESP32-HUB75-*`, `src/platforms/` | HUB75 panel driver vendored from Waveshare's Arduino examples (copied from infopanel64) |
 | `src/secrets.example.h` | template for `src/secrets.h` |
 | `partitions_32MB.csv` | flash layout (two 4 MB app slots) |

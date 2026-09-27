@@ -94,6 +94,12 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **Message** (4.3 s): the lines drop in one after another. A diagonal shimmer brightens the text, and confetti falls only on empty pixels.
 - **Not seen on hardware yet.**
 
+## Animation GIFs (`tools/sim/`)
+
+- `make_gifs.py` compiles `sim.cpp`, which `#include`s `src/main.cpp`, with the host C++ compiler and the stand-in headers in `tools/sim/include` (Arduino core, WiFi, HTTPClient, WebServer, Preferences, OTA, mDNS, FreeRTOS and HUB75 stubs; `secrets.h` with a dummy SSID). It also compiles `startup.cpp`, `celebrate.cpp` and Adafruit GFX from `.pio/libdeps`.
+- `sim.cpp` drives the firmware's static functions: a fixed roster and games, then `handleTest()` per sample (with a player of the matching position swapped to the top), a made-up loss, the idle scoreboard and `drawStartup()`. Each 50 ms frame is written as raw RGB565, and `make_gifs.py` turns the frames into `docs/gifs/*.gif`: one dot per pixel at 4×, with identical frames merged.
+- When `main.cpp` starts using a new ESP32 or Arduino API, add a stand-in to `tools/sim/include`.
+
 ## HTTP lessons carried over from infopanel64
 
 - `http.useHTTP10(true)`: a plain body and a closed connection, instead of chunked keep-alive. The chunked replies caused `-11` read timeouts there.

@@ -1,10 +1,12 @@
 # pio-chriss-scoreboard
 
-A live fantasy football scoreboard for a 64×64 HUB75 LED panel on the **Waveshare ESP32-S3-RGB-Matrix** board. It shows up to 9 chosen players on one screen, with their fantasy points for the current NFL week and a football next to anyone whose team has the ball. The players are picked on a web page served by the board.
+A live fantasy football scoreboard for a 64×64 HUB75 LED panel on the **Waveshare ESP32-S3-RGB-Matrix** board. It shows up to 9 chosen players on one screen with their fantasy points for the current NFL week, a football next to anyone whose team has the ball, and a total line with rotating NFL scores. When a player scores, the whole panel celebrates and then shows what happened. The players are picked on a web page served by the board.
 
 ![Panel layout preview](docs/panel-preview.png)
 
-*9 players at the Medium name size, drawn offline with the panel's fonts from made-up data (`tools/render_preview.py`); not a photo.*
+![Update screen preview](docs/update-preview.png)
+
+*The scoreboard, and the update screen shown after a celebration. Both drawn offline with the panel's fonts from made-up data (`tools/render_preview.py`); not photos.*
 
 Plain-language instructions for guests (finding the board, picking players): [`GUIDE.md`](GUIDE.md).
 
@@ -18,33 +20,37 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 | v0.3.1 | fix: ESPN scoreboard parse failed (JSON nesting limit) | not yet flashed |
 | v0.4 | all 9 players on one screen; score lines and pages removed; possession shown as a brown football before the points; Medium is the default name size | not yet flashed |
 | v0.4.1 | panel order set on the web page with ↑/↓ buttons instead of by points | not yet flashed |
-| v0.4.2 (current `main`) | OTA back to a plain `esp32s3-ota` environment (the custom `ota` target is removed) | not yet flashed |
+| v0.4.2 | OTA back to a plain `esp32s3-ota` environment (the custom `ota` target is removed) | not yet flashed |
+| v0.5 (current `main`) | 5 px font and 10 lines: 9 players plus a total line with rotating NFL scores; full-screen celebration and update screens when points change; test button; name-size setting removed | not yet flashed |
 
 Open points:
 - **Possession marker:** checked against live games on 2026-09-27 at 17:20 UTC; the fields are as expected (see the ESPN section). v0.2 and v0.3 had a bug: ArduinoJson's default nesting limit rejected ESPN's reply, so every scoreboard fetch failed. It is fixed on `main` (v0.3.1).
 - **OTA flashing speed:** flashing firmware over WiFi was very slow on v0.1. The fix (WiFi modem sleep off) is part of the firmware on the board, so it only helps once v0.2 or later is running: the OTA flash that installs v0.2 over v0.1 is still slow (or flash that one over USB). The speed of later OTA flashes has not been measured.
 - **Data delay:** how soon points and possession on the panel change after a play has not been measured.
+- **Event descriptions:** built from Sleeper stat names seen in week 2 replies (`rush_yd`, `rec_yd`, `pass_td`, `fgm_yds`, `sack`, ...). `pass_int`, `fum_lost`, `int` and `fum_rec` did not appear in those replies; their names are unverified.
 
 ## What it shows
 
 - **Startup:** a football is kicked through the goalposts, a rainbow pinwheel spins up and dissolves into confetti, and the panel says "GOOD AFTERNOON CHAMPIONS !!!" (about 9 s, while WiFi connects). `STARTUP_ANIMATION 0` skips it.
 - **Players:** up to 9, top to bottom in the order set on the web page with the ↑ and ↓ buttons. `SORT_BY_POINTS 1` in `src/main.cpp` sorts by points instead.
-- **All players on one screen:** one row per player, 7 px each with 9 players (up to 8 px with fewer).
-- **Each row:**
+- **Layout:** 10 lines of 5 px text (X11 4×6 font), 6 px apart.
+  - Rows 0–53: up to 9 player rows.
+  - Row 55: dotted divider.
+  - Rows 57–61: the total line.
+- **Each player row:**
   - a position bar on the left: QB red, RB green, WR blue, TE orange, K purple, DEF grey
-  - the label (editable on the web page). A label too wide for the row is shortened from the middle, so it stays readable: doubled letters, then vowels, then other letters go, keeping the first and last letters (`Washington` → `Washngtn` → `Wshngtn`, `Hockenson` → `Hocknsn`). See `src/abbrev.h`.
+  - the label (editable on the web page). A label too wide for the row is shortened from the middle, so it stays readable: doubled letters, then vowels, then other letters go, keeping the first and last letters (`Washington` → `Washngtn`). See `src/abbrev.h`.
   - a small football (5×3, brown with a white lace) just before the points while the player's team has the ball. It turns red inside the opponent's 20. While the player's game is live, the football's space stays reserved, so the label doesn't change length every time possession changes.
   - this week's points, right-aligned
-- **Game scores** are not on the panel. The web page shows each player's game line (score, quarter and clock, kickoff time, final, bye).
-- **Name size**, chosen on the web page:
-
-  | Setting | Font | Letters that fit (typical) | With 9 players |
-  |---|---|---|---|
-  | Large | built-in 6×8 | about 6 | cramped: rows touch, descenders (g, j, p, q, y) are clipped |
-  | Medium (default) | X11 5×7 | about 7–8 | clean: the font is exactly 7 px tall |
-  | Narrow | u8g2 "squeezed" 7 px, proportional | about 8–9 | descenders clipped |
-
-  Pictures of all three with 9 players: `docs/panel-preview.png` (Medium), `docs/panel-preview-large.png`, `docs/panel-preview-narrow.png`.
+- **Total line:**
+  - right: the total of all players' points, in gold
+  - left: NFL games in rotation, 3 s each; live games first, then finals, then games not started. Live games are white (`KC 17 MIA 10`), finals grey, upcoming games blue (`ARI@SF 4:05P`). A score too wide for its space is squeezed (spaces dropped, then the narrower TomThumb font).
+- **When points change** by at least `EVENT_MIN_PTS` (1.0) in one fetch, the scoreboard gives way to full screens, then returns:
+  1. **Celebration** (points gained only, 2 s): four fireworks bursts in the player's position colour and rainbow sparks, with a flash at each burst (`src/celebrate.cpp`).
+  2. **Update screen** (3.5 s): the player's name in large letters, what happened, the points gained (green) or lost (red), and the player's new total.
+  - **What happened** comes from comparing the player's stats with the previous fetch. In order of priority: a touchdown (`RUSHING TD`, `RECEIVING TD`, `TD PASS`, `DEFENSIVE TD`), a field goal with its distance, an interception, a fumble recovery or a sack for a defense, `INTERCEPTED` or `FUMBLE LOST`, then yards (`RUN FOR 30 YDS`, `CATCH FOR 12 YDS`, `PASS FOR 45 YDS`), then `EXTRA POINT`. Several plays can happen between two fetches (30 s); yards are then the total.
+  - Several changes in one fetch are shown one after another, up to 6 queued.
+  - The **Test celebration** button on the web page plays both screens for the first player, with a made-up 30-yard run.
 - **Points:**
   - `-` in grey: no stats this week yet (game not started, or bye)
   - green for 8 s after a change
@@ -66,13 +72,13 @@ Open points:
    pio run -e esp32s3 -t upload
    ```
 3. Open `http://scoreboard.local/` on a phone on the same WiFi, or use the IP shown on the panel. The panel shows its IP only while no players are chosen.
-4. Search for players, add up to 9, pick the name size and the scoring format (PPR, half PPR, standard), and press **Save to panel**.
+4. Search for players, add up to 9, put them in order with ↑ and ↓, pick the scoring format (PPR, half PPR, standard), and press **Save to panel**.
 
-The roster, scoring format, name size and brightness are stored in NVS and survive reboots.
+The roster, scoring format and brightness are stored in NVS and survive reboots.
 
 ### Entering a lineup in one step
 
-From a computer on the same network, one request replaces the whole roster. Scoring, brightness and name size stay as they are. IDs are Sleeper `player_id`s; team defenses use the team code.
+From a computer on the same network, one request replaces the whole roster. Scoring and brightness stay as they are. IDs are Sleeper `player_id`s; team defenses use the team code.
 
 ```sh
 curl -X POST http://scoreboard.local/api/config -H "Content-Type: application/json" \
@@ -145,8 +151,9 @@ Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app sl
 | Method | Path | Body / reply |
 |---|---|---|
 | GET | `/` | the picker page |
-| GET | `/api/config` | `{scoring, brightness, font, players:[{id,label,pos,team,pts,state,game}], season, season_type, week, status, last_ok_s}` |
-| POST | `/api/config` | `{scoring, brightness, font, players:[{id,label,pos,team}]}`, at most 9 players; replies like GET |
+| GET | `/api/config` | `{scoring, brightness, players:[{id,label,pos,team,pts,state,game}], season, season_type, week, status, last_ok_s}` |
+| POST | `/api/test` | plays the celebration and update screens for the first player (made-up event) |
+| POST | `/api/config` | `{scoring, brightness, players:[{id,label,pos,team}]}`, at most 9 players; replies like GET |
 
 `state`: 0 not fetched yet, 1 no stats this week, 2 points valid. `status`: the last HTTP code, or −1 begin failed, −2 JSON parse error, −3 unexpected state reply.
 
@@ -170,8 +177,9 @@ Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app sl
 | `src/web_page.h` | the player picker page (HTML + JavaScript, served from flash) |
 | `src/abbrev.h` | shortens labels from the middle to fit the row |
 | `src/startup.cpp`, `src/startup.h` | startup animation |
-| `src/fonts/` | Medium and Narrow fonts as Adafruit GFX headers, generated by `tools/bdf2gfx.py` from `tools/fonts/*.bdf` |
-| `tools/render_preview.py` | redraws `docs/panel-preview.png` |
+| `src/fonts/` | X11 4×6 (rows) and 5×7 (update screen) fonts as Adafruit GFX headers, generated by `tools/bdf2gfx.py` from `tools/fonts/*.bdf` |
+| `src/celebrate.cpp`, `src/celebrate.h` | fireworks celebration |
+| `tools/render_preview.py` | redraws `docs/panel-preview.png` and `docs/update-preview.png` |
 | `src/ESP32-HUB75-*`, `src/platforms/` | HUB75 panel driver vendored from Waveshare's Arduino examples (copied from infopanel64) |
 | `src/secrets.example.h` | template for `src/secrets.h` |
 | `partitions_32MB.csv` | flash layout (two 4 MB app slots) |
@@ -183,4 +191,4 @@ Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app sl
 - **HUB75 driver:** [ESP32-HUB75-MatrixPanel-DMA](https://github.com/mrcodetastic/ESP32-HUB75-MatrixPanel-DMA) by mrcodetastic, vendored from Waveshare's examples.
 - **Board configuration:** Waveshare's [ESP32-S3-RGB-Matrix](https://www.waveshare.com/esp32-s3-rgb-matrix.htm) examples (Apache-2.0), via infopanel64.
 - **Data:** [Sleeper](https://sleeper.com/), under its API terms (non-commercial use); game scores from ESPN's public scoreboard endpoint.
-- **Fonts:** X11 misc-fixed 5×7 (public domain) and u8g2 "squeezed" regular 7 (public domain), both taken as BDF from [olikraus/u8g2](https://github.com/olikraus/u8g2).
+- **Fonts:** X11 misc-fixed 4×6 and 5×7 (public domain), taken as BDF from [olikraus/u8g2](https://github.com/olikraus/u8g2). TomThumb ships with Adafruit GFX.

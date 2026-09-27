@@ -1,10 +1,15 @@
 // pio-chriss-scoreboard: live fantasy football points on the Waveshare ESP32-S3-RGB-Matrix with a
 // 64x64 HUB75 panel.
 //
-// Up to 9 players on one screen, in the order set on the web page. Each player gets a row: a
-// position-coloured bar, a label and this week's fantasy points, with a small football before the
-// points while the player's team has the ball. A player's points turn green for a few seconds when
-// they change.
+// Scoreboard: 10 lines of 5 px text (X11 4x6 font). Up to 9 player rows in the order set on the
+// web page: a position-coloured bar, a label, a small football while the player's team has the
+// ball, and this week's fantasy points. Under a divider, the total line: rotating NFL scores on the
+// left, the total of all players' points on the right.
+//
+// When a player's points change by EVENT_MIN_PTS or more, the scoreboard gives way to full-screen
+// screens, then returns: a gain plays a 2 s celebration (celebrate.cpp) and then the update screen
+// ("GIBBS / RUN FOR 30 YDS / +3.0"); a loss shows only the update screen, in red. The play is
+// worked out from the change in the player's stats since the previous fetch.
 //
 // Players are picked on a web page served by the board (http://scoreboard.local/). The page's
 // JavaScript downloads Sleeper's player list itself, so the board never handles that 5 MB file; it
@@ -13,9 +18,8 @@
 // Data, fetched by a background task on core 0 every POLL_MS:
 //   - Points: Sleeper (no API key). /v1/state/nfl gives the season and week, then each player's
 //     stats for that week (api.sleeper.com/stats/nfl/player/<id>, about 1 KB each).
-//   - Possession: ESPN's public scoreboard (one ~270 KB reply for the whole week, parsed as a
-//     stream through a filter, so only a few hundred bytes are kept). The game scores it also
-//     carries are shown on the web page, not the panel.
+//   - Game scores and possession: ESPN's public scoreboard (one ~270 KB reply for the whole week,
+//     parsed as a stream through a filter, so only a few hundred bytes are kept).
 //
 // Boot plays a startup animation (startup.cpp) while WiFi connects.
 //
@@ -35,8 +39,10 @@
 #include <algorithm>
 #include <cmath>
 #include "abbrev.h"
+#include <Fonts/TomThumb.h>
+#include "celebrate.h"
+#include "fonts/Font4x6.h"
 #include "fonts/Font5x7.h"
-#include "fonts/FontSqueezed7.h"
 #include "startup.h"
 #include "web_page.h"
 
@@ -60,12 +66,18 @@
 #define MAX_PLAYERS        9
 #define LABEL_X            3       // after the 2 px position bar
 #define LABEL_GAP          2       // minimum blank columns between the label and the points
-#define MIN_ROW_H          7       // 9 rows x 7 px = 63; row 63 stays free for the error pixel
+#define ROW_H              6       // 5 px letters + 1 px gap; 9 player rows = rows 0-53
+#define DIVIDER_Y          55
+#define TOTAL_Y            57      // top of the total line (letters on rows 57-61)
+#define SCORES_ROTATE_MS   3000    // each NFL game on the total line shows this long
 #define BALL_W             5       // possession football, 5x3
 #define BALL_GAP           2       // blank columns between the football and the points
 #define SORT_BY_POINTS     0       // 0: the order set on the web page (arrows); 1: highest points first
 #define FLASH_MS           8000    // points that changed are drawn green this long
 #define STARTUP_ANIMATION  1       // 0: skip the startup animation
+#define EVENT_MIN_PTS      1.0f    // a points change at least this big (up or down) gets the screens
+#define UPDATE_MS          3500    // how long the update screen shows
+#define MAX_EVENTS         6       // queued update screens; later ones are dropped when full
 #define HOSTNAME           "scoreboard"
 
 // ---- Data ----------------------------------------------------------------------------
@@ -84,14 +96,33 @@ enum PointsState : int8_t {
   PTS_OK = 2,
 };
 
+// Sleeper stat fields kept per player, to describe what happened when the points change.
+enum Stat : uint8_t {
+  ST_PASS_YD, ST_PASS_TD, ST_PASS_INT, ST_RUSH_YD, ST_RUSH_TD, ST_REC, ST_REC_YD, ST_REC_TD,
+  ST_FUM_LOST, ST_FGM, ST_FGM_YDS, ST_XPM, ST_SACK, ST_INT, ST_DEF_TD, ST_FUM_REC, ST_COUNT
+};
+static const char *const STAT_KEYS[ST_COUNT] = {
+    "pass_yd", "pass_td", "pass_int", "rush_yd", "rush_td", "rec", "rec_yd", "rec_td",
+    "fum_lost", "fgm", "fgm_yds", "xpm", "sack", "int", "td", "fum_rec"};
+
 struct Player {
   char id[12];       // Sleeper player_id: digits for players, team abbreviation for defenses
-  char label[16];    // shown on the panel, cut to the width that fits
+  char label[16];    // shown on the panel, shortened to the width that fits
   char pos[4];
   char team[4];
   float pts;
   PointsState state;
   uint32_t changed_ms;   // millis() of the last points change, for the flash
+  float stats[ST_COUNT];
+};
+
+// One change worth the full-screen treatment.
+struct Event {
+  char label[16];
+  char pos[4];
+  char action[24];   // "RUN FOR 30 YDS", "RECEIVING TD", ...
+  float delta;       // points gained (negative: lost)
+  float pts;         // the player's points afterwards
 };
 
 enum GameState : uint8_t { GAME_PRE, GAME_LIVE, GAME_FINAL };
@@ -110,20 +141,6 @@ struct Game {
   bool red_zone;
 };
 
-// Name sizes offered on the web page. The label and points share a baseline; `height` is the row.
-struct RowFont {
-  const GFXfont *label;    // nullptr: Adafruit GFX's built-in 6x8 font
-  const GFXfont *points;
-  int8_t baseline;         // cursor y offset from the row top (0 for the built-in font)
-  int8_t height;
-};
-static const RowFont ROW_FONTS[] = {
-    {nullptr, nullptr, 0, 8},                                   // 0 Large: about 6 letters
-    {&Font5x7, &Font5x7, Font5x7_ASCENT, 7},                    // 1 Medium: about 7-8 letters
-    {&FontSqueezed7, &Font5x7, FontSqueezed7_ASCENT, 8},        // 2 Narrow: about 8-9 letters
-};
-static constexpr int NUM_ROW_FONTS = sizeof(ROW_FONTS) / sizeof(ROW_FONTS[0]);
-
 static MatrixPanel_I2S_DMA *display = nullptr;
 static GFXcanvas16 *canvas = nullptr;
 static uint16_t g_shown[PANEL_W * PANEL_H];    // what the panel currently shows
@@ -138,7 +155,6 @@ static int g_count = 0;
 static uint32_t g_generation = 0;             // bumped on every roster change
 static char g_scoring[12] = "pts_ppr";        // pts_ppr, pts_half_ppr or pts_std
 static int g_brightness = DEFAULT_BRIGHTNESS;
-static int g_font = 1;                        // index into ROW_FONTS; Medium fits 9 rows cleanly
 static char g_season[8] = "";
 static char g_season_type[12] = "regular";
 static int g_week = 0;
@@ -151,6 +167,15 @@ static int g_status = 0;                      // last HTTP code, or negative for
 static TaskHandle_t g_fetch_task = nullptr;
 static uint32_t g_startup_ms = 0;
 static bool g_startup_running = STARTUP_ANIMATION;
+
+// Update screens waiting to be shown (ring buffer, guarded by g_lock), and the one showing.
+static Event g_events[MAX_EVENTS];
+static int g_event_head = 0;
+static int g_event_count = 0;
+static Event g_current;
+static bool g_showing = false;
+static uint32_t g_show_ms = 0;
+static uint32_t g_event_seq = 0;
 
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -166,6 +191,8 @@ static const uint16_t COLOR_INFO    = rgb565(120, 200, 240);
 static const uint16_t COLOR_BALL    = rgb565(200, 105, 35);    // leather brown
 static const uint16_t COLOR_LACE    = rgb565(255, 255, 255);
 static const uint16_t COLOR_RED_ZONE = rgb565(255, 40, 40);
+static const uint16_t COLOR_TOTAL   = rgb565(255, 190, 60);
+static const uint16_t COLOR_DIVIDER = rgb565(90, 70, 130);
 
 static uint16_t positionColor(const char *pos)
 {
@@ -264,7 +291,7 @@ static bool validId(const char *id)
   return true;
 }
 
-// Applies {"scoring", "brightness", "font", "players": [{id, label, pos, team}, ...]}.
+// Applies {"scoring", "brightness", "players": [{id, label, pos, team}, ...]}.
 // Caller holds g_lock. Returns false (and changes nothing) on bad input.
 static bool applyConfig(JsonDocument &doc)
 {
@@ -288,6 +315,7 @@ static bool applyConfig(JsonDocument &doc)
       if (!strcmp(g_players[i].id, q.id)) {
         q.pts = g_players[i].pts;
         q.state = g_players[i].state;
+        memcpy(q.stats, g_players[i].stats, sizeof(q.stats));
       }
     }
     ++n;
@@ -303,7 +331,6 @@ static bool applyConfig(JsonDocument &doc)
     copyStr(g_scoring, sizeof(g_scoring), scoring);
   }
   g_brightness = std::min(255, std::max(1, doc["brightness"] | g_brightness));
-  g_font = std::min(NUM_ROW_FONTS - 1, std::max(0, doc["font"] | g_font));
 
   memcpy(g_players, next, sizeof(g_players));
   g_count = n;
@@ -316,7 +343,6 @@ static void configToJson(JsonDocument &doc, bool with_points)
 {
   doc["scoring"] = g_scoring;
   doc["brightness"] = g_brightness;
-  doc["font"] = g_font;
   JsonArray list = doc["players"].to<JsonArray>();
   for (int i = 0; i < g_count; ++i) {
     const Player &p = g_players[i];
@@ -441,7 +467,7 @@ static bool fetchState()
 // One player's points for the current week. The reply is the stat line, or the literal null when
 // the player has no stats that week yet.
 static bool fetchPlayer(const char *id, const char *scoring, const char *season, const char *type,
-                        int week, float &pts, PointsState &state)
+                        int week, float &pts, PointsState &state, float *stats)
 {
   char url[192];
   snprintf(url, sizeof(url),
@@ -449,11 +475,17 @@ static bool fetchPlayer(const char *id, const char *scoring, const char *season,
            id, type, season, week);
   JsonDocument filter;
   filter["stats"][scoring] = true;
+  for (const char *key : STAT_KEYS) {
+    filter["stats"][key] = true;
+  }
   JsonDocument doc;
   const int code = getJson(url, doc, &filter);
   if (code != HTTP_CODE_OK) {
     g_status = code;
     return false;
+  }
+  for (int k = 0; k < ST_COUNT; ++k) {
+    stats[k] = doc["stats"][STAT_KEYS[k]] | 0.0f;
   }
   if (doc.isNull() || doc["stats"].isNull()) {
     state = PTS_NO_GAME;
@@ -556,6 +588,65 @@ static bool fetchScoreboard()
   return true;
 }
 
+// What happened between two stat lines, most notable first. Several plays can fall between two
+// fetches; yardage is then the total of all of them.
+static void describeChange(const float *before, const float *after, float delta, char *out, size_t size)
+{
+  float d[ST_COUNT];
+  for (int k = 0; k < ST_COUNT; ++k) {
+    d[k] = after[k] - before[k];
+  }
+  const int rush = static_cast<int>(lroundf(d[ST_RUSH_YD]));
+  const int rec = static_cast<int>(lroundf(d[ST_REC_YD]));
+  const int pass = static_cast<int>(lroundf(d[ST_PASS_YD]));
+  if (d[ST_DEF_TD] > 0) {
+    snprintf(out, size, "DEFENSIVE TD");
+  } else if (d[ST_RUSH_TD] > 0) {
+    snprintf(out, size, "RUSHING TD");
+  } else if (d[ST_REC_TD] > 0) {
+    snprintf(out, size, "RECEIVING TD");
+  } else if (d[ST_PASS_TD] > 0) {
+    snprintf(out, size, "TD PASS");
+  } else if (d[ST_FGM] > 0) {
+    const int yds = static_cast<int>(lroundf(d[ST_FGM_YDS] / d[ST_FGM]));
+    if (yds > 0) {
+      snprintf(out, size, "%d YD FIELD GOAL", yds);
+    } else {
+      snprintf(out, size, "FIELD GOAL");
+    }
+  } else if (d[ST_INT] > 0) {
+    snprintf(out, size, "INTERCEPTION");
+  } else if (d[ST_FUM_REC] > 0) {
+    snprintf(out, size, "FUMBLE RECOVERY");
+  } else if (d[ST_SACK] > 0) {
+    snprintf(out, size, "SACK");
+  } else if (d[ST_PASS_INT] > 0) {
+    snprintf(out, size, "INTERCEPTED");
+  } else if (d[ST_FUM_LOST] > 0) {
+    snprintf(out, size, "FUMBLE LOST");
+  } else if (rush != 0 && abs(rush) >= abs(rec) && abs(rush) >= abs(pass)) {
+    snprintf(out, size, "RUN FOR %d YDS", rush);
+  } else if (rec != 0 && abs(rec) >= abs(pass)) {
+    snprintf(out, size, "CATCH FOR %d YDS", rec);
+  } else if (pass != 0) {
+    snprintf(out, size, "PASS FOR %d YDS", pass);
+  } else if (d[ST_XPM] > 0) {
+    snprintf(out, size, "EXTRA POINT");
+  } else {
+    snprintf(out, size, delta > 0 ? "POINTS UP" : "POINTS DOWN");
+  }
+}
+
+// Caller holds g_lock.
+static void queueEvent(const Event &e)
+{
+  if (g_event_count >= MAX_EVENTS) {
+    return;
+  }
+  g_events[(g_event_head + g_event_count) % MAX_EVENTS] = e;
+  ++g_event_count;
+}
+
 static void fetchTask(void *)
 {
   uint32_t last_state_ms = 0;
@@ -594,7 +685,8 @@ static void fetchTask(void *)
     for (int i = 0; i < count; ++i) {
       float pts = 0.0f;
       PointsState state = PTS_UNKNOWN;
-      if (!fetchPlayer(roster[i].id, scoring, season, type, week, pts, state)) {
+      float stats[ST_COUNT] = {};
+      if (!fetchPlayer(roster[i].id, scoring, season, type, week, pts, state, stats)) {
         all_ok = false;
         continue;
       }
@@ -603,9 +695,19 @@ static void fetchTask(void *)
         Player &p = g_players[i];
         if (p.state == PTS_OK && state == PTS_OK && fabsf(p.pts - pts) > 0.001f) {
           p.changed_ms = millis();
+          if (fabsf(pts - p.pts) >= EVENT_MIN_PTS - 0.001f) {
+            Event e = {};
+            copyStr(e.label, sizeof(e.label), p.label);
+            copyStr(e.pos, sizeof(e.pos), p.pos);
+            e.delta = pts - p.pts;
+            e.pts = pts;
+            describeChange(p.stats, stats, e.delta, e.action, sizeof(e.action));
+            queueEvent(e);
+          }
         }
         p.pts = pts;
         p.state = state;
+        memcpy(p.stats, stats, sizeof(p.stats));
       }
       xSemaphoreGive(g_lock);
     }
@@ -661,6 +763,27 @@ static void handlePostConfig()
     xTaskNotifyGive(g_fetch_task);
   }
   handleGetConfig();
+}
+
+// POST /api/test: queue a made-up event for the first player, to see the screens.
+static void handleTest()
+{
+  Event e = {};
+  xSemaphoreTake(g_lock, portMAX_DELAY);
+  if (g_count > 0) {
+    copyStr(e.label, sizeof(e.label), g_players[0].label);
+    copyStr(e.pos, sizeof(e.pos), g_players[0].pos);
+    e.pts = (g_players[0].state == PTS_OK ? g_players[0].pts : 0.0f) + 3.0f;
+  } else {
+    copyStr(e.label, sizeof(e.label), "Test");
+    copyStr(e.pos, sizeof(e.pos), "RB");
+    e.pts = 3.0f;
+  }
+  copyStr(e.action, sizeof(e.action), "RUN FOR 30 YDS");
+  e.delta = 3.0f;
+  queueEvent(e);
+  xSemaphoreGive(g_lock);
+  server.send(200, "text/plain", "queued");
 }
 
 // ---- Display -------------------------------------------------------------------------
@@ -731,10 +854,12 @@ static void teamPossession(const char *team, bool &live, bool &has_ball, bool &r
   red_zone = has_ball && game->red_zone;
 }
 
-// One player row, `row_h` pixels tall starting at y.
-static void drawPlayer(const Player &p, int y, int row_h, const RowFont &rf, bool stale, uint32_t now)
+// One player row, ROW_H pixels tall starting at y.
+static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
 {
-  canvas->fillRect(0, y, 2, row_h - 1, positionColor(p.pos));
+  canvas->fillRect(0, y, 2, ROW_H - 1, positionColor(p.pos));
+  canvas->setFont(&Font4x6);
+  const int base = y + Font4x6_ASCENT;
 
   // Points, right-aligned to the panel edge.
   char pts[8];
@@ -751,10 +876,9 @@ static void drawPlayer(const Player &p, int y, int row_h, const RowFont &rf, boo
   if (stale && p.state != PTS_UNKNOWN) {
     color = COLOR_DIM;
   }
-  canvas->setFont(rf.points);
-  const int pts_x = PANEL_W - inkWidth(pts, rf.points);
+  const int pts_x = PANEL_W - inkWidth(pts, &Font4x6);
   canvas->setTextColor(color);
-  canvas->setCursor(pts_x, y + rf.baseline);
+  canvas->setCursor(pts_x, base);
   canvas->print(pts);
 
   // Football before the points while the team has the ball. Its space is kept for the whole game,
@@ -765,18 +889,99 @@ static void drawPlayer(const Player &p, int y, int row_h, const RowFont &rf, boo
   xSemaphoreGive(g_lock);
   const int ball_x = pts_x - BALL_GAP - BALL_W;
   if (has_ball) {
-    drawBall(ball_x, y + 2, red_zone);
+    drawBall(ball_x, y + 1, red_zone);
   }
 
   // Label: shortened from the middle until it fits (abbrev.h).
-  canvas->setFont(rf.label);
   char label[sizeof(Player::label)];
   copyStr(label, sizeof(label), p.label);
   const int right = live ? ball_x : pts_x;
-  abbreviate(label, right - LABEL_GAP - LABEL_X, [&rf](const char *text) { return inkWidth(text, rf.label); });
+  abbreviate(label, right - LABEL_GAP - LABEL_X, [](const char *text) { return inkWidth(text, &Font4x6); });
   canvas->setTextColor(COLOR_TEXT);
-  canvas->setCursor(LABEL_X, y + rf.baseline);
+  canvas->setCursor(LABEL_X, base);
   canvas->print(label);
+}
+
+// Games in the order the total line rotates through them: live, then final, then not started.
+// Caller holds g_lock.
+static int orderedGames(const Game **out)
+{
+  int n = 0;
+  for (GameState want : {GAME_LIVE, GAME_FINAL, GAME_PRE}) {
+    for (int i = 0; i < g_game_count; ++i) {
+      if (g_games[i].state == want) {
+        out[n++] = &g_games[i];
+      }
+    }
+  }
+  return n;
+}
+
+// Left part of the total line: one NFL game, away team first, in the widest form that fits.
+static void drawGameScore(const Game &game, int max_w, int base)
+{
+  char forms[4][24];
+  if (game.state == GAME_PRE) {
+    snprintf(forms[0], sizeof(forms[0]), "%s@%s %s", game.away, game.home, game.kickoff);
+    snprintf(forms[1], sizeof(forms[1]), "%s@%s", game.away, game.home);
+    copyStr(forms[2], sizeof(forms[2]), forms[0]);
+    copyStr(forms[3], sizeof(forms[3]), forms[1]);
+  } else {
+    snprintf(forms[0], sizeof(forms[0]), "%s %d %s %d", game.away, game.away_score, game.home, game.home_score);
+    snprintf(forms[1], sizeof(forms[1]), "%s%d %s%d", game.away, game.away_score, game.home, game.home_score);
+    copyStr(forms[2], sizeof(forms[2]), forms[0]);
+    copyStr(forms[3], sizeof(forms[3]), forms[1]);
+  }
+  // Forms 0-1 in the row font, 2-3 in the narrower TomThumb (same 5 px height).
+  const GFXfont *fonts[4] = {&Font4x6, &Font4x6, &TomThumb, &TomThumb};
+  int pick = 3;
+  for (int i = 0; i < 4; ++i) {
+    canvas->setFont(fonts[i]);
+    if (inkWidth(forms[i], fonts[i]) <= max_w) {
+      pick = i;
+      break;
+    }
+  }
+  canvas->setFont(fonts[pick]);
+  const uint16_t color = game.state == GAME_LIVE ? COLOR_TEXT : (game.state == GAME_FINAL ? COLOR_DIM : COLOR_INFO);
+  canvas->setTextColor(color);
+  canvas->setCursor(0, base);
+  canvas->print(forms[pick]);
+}
+
+// Divider, then the total line: rotating NFL scores on the left, total points on the right.
+static void drawTotalLine(const Player *rows, int count, uint32_t now)
+{
+  for (int x = 0; x < PANEL_W; ++x) {
+    canvas->drawPixel(x, DIVIDER_Y, (x & 1) ? COLOR_DIVIDER : 0);
+  }
+  float total = 0;
+  bool any = false;
+  for (int i = 0; i < count; ++i) {
+    if (rows[i].state == PTS_OK) {
+      total += rows[i].pts;
+      any = true;
+    }
+  }
+  char text[12];
+  snprintf(text, sizeof(text), any ? "%.1f" : "-", total);
+  const int base = TOTAL_Y + Font4x6_ASCENT;
+  canvas->setFont(&Font4x6);
+  const int total_x = PANEL_W - inkWidth(text, &Font4x6);
+  canvas->setTextColor(any ? COLOR_TOTAL : COLOR_DIM);
+  canvas->setCursor(total_x, base);
+  canvas->print(text);
+
+  const Game *games[MAX_GAMES];
+  xSemaphoreTake(g_lock, portMAX_DELAY);
+  const int n = orderedGames(games);
+  if (n > 0) {
+    const Game game = *games[(now / SCORES_ROTATE_MS) % n];
+    xSemaphoreGive(g_lock);
+    drawGameScore(game, total_x - 3, base);
+  } else {
+    xSemaphoreGive(g_lock);
+  }
 }
 
 static void drawScreen(uint32_t now)
@@ -795,11 +1000,10 @@ static void drawScreen(uint32_t now)
   }
 
   Player rows[MAX_PLAYERS];
-  int count, font;
+  int count;
   xSemaphoreTake(g_lock, portMAX_DELAY);
   memcpy(rows, g_players, sizeof(rows));
   count = g_count;
-  font = g_font;
   xSemaphoreGive(g_lock);
 
   if (count == 0) {
@@ -826,25 +1030,124 @@ static void drawScreen(uint32_t now)
     });
   }
 
-  // Everyone on one screen: rows of 64 / count px, at least MIN_ROW_H (9 players: 7 px) and at
-  // most the font's height plus a blank line. When a row is shorter than the font, descenders
-  // (g, j, p, q, y) that would reach into the next row are cleared before that row is drawn.
-  const RowFont &rf = ROW_FONTS[font];
-  const int row_h = std::min(rf.height + 1, std::max(MIN_ROW_H, PANEL_H / count));
   const bool stale = g_last_ok_ms == 0 || now - g_last_ok_ms > STALE_MS;
   for (int i = 0; i < count; ++i) {
-    const int y = i * row_h;
-    drawPlayer(rows[i], y, row_h, rf, stale, now);
-    if (row_h < rf.height) {
-      canvas->fillRect(0, y + row_h, PANEL_W, rf.height - row_h, 0);
-    }
+    drawPlayer(rows[i], i * ROW_H, stale, now);
   }
+  drawTotalLine(rows, count, now);
   canvas->setFont(nullptr);
 
   // Fetch problem: one red pixel in the bottom-right corner.
   if (g_status != 0 && g_status != HTTP_CODE_OK) {
     canvas->drawPixel(PANEL_W - 1, PANEL_H - 1, rgb565(255, 0, 0));
   }
+}
+
+// Draws `text` centred at baseline y in `font` at `size`, shrinking to the 4x6 font and then
+// shortening it if it is too wide.
+static void drawCenteredFit(const char *text, int base, const GFXfont *font, uint8_t size, uint16_t color)
+{
+  char buf[32];
+  copyStr(buf, sizeof(buf), text);
+  canvas->setFont(font);
+  canvas->setTextSize(size);
+  if (inkWidth(buf, font) > PANEL_W) {
+    font = &Font5x7;
+    size = 1;
+    canvas->setFont(font);
+    canvas->setTextSize(size);
+    if (inkWidth(buf, font) > PANEL_W) {
+      font = &Font4x6;
+      canvas->setFont(font);
+      abbreviate(buf, PANEL_W, [font](const char *s) { return inkWidth(s, font); });
+    }
+  }
+  const int w = inkWidth(buf, font);
+  canvas->setTextColor(color);
+  canvas->setCursor((PANEL_W - w) / 2, base);
+  canvas->print(buf);
+  canvas->setTextSize(1);
+}
+
+// Full-screen update: name, what happened, points gained, new total for the player.
+static void drawUpdate(const Event &e, uint32_t t)
+{
+  canvas->fillScreen(0);
+  const uint16_t theme = positionColor(e.pos);
+  // Position-coloured frame that fades in.
+  if (t > 100) {
+    canvas->drawRect(0, 0, PANEL_W, PANEL_H, theme);
+  }
+
+  char name[16];
+  copyStr(name, sizeof(name), e.label);
+  for (char *c = name; *c; ++c) {
+    *c = static_cast<char>(toupper(static_cast<unsigned char>(*c)));
+  }
+  drawCenteredFit(name, 4 + 2 * Font5x7_ASCENT, &Font5x7, 2, COLOR_TEXT);
+
+  // The action, split over two lines when it has several words and doesn't fit on one.
+  canvas->setFont(&Font5x7);
+  canvas->setTextSize(1);
+  const char *space = strchr(e.action, ' ');
+  if (inkWidth(e.action, &Font5x7) <= PANEL_W - 2 || !space) {
+    drawCenteredFit(e.action, 26 + Font5x7_ASCENT, &Font5x7, 1, theme);
+  } else {
+    // Break at the space nearest the middle.
+    const char *best = space;
+    const int len = static_cast<int>(strlen(e.action));
+    for (const char *s = space; s; s = strchr(s + 1, ' ')) {
+      if (abs((s - e.action) - len / 2) < abs((best - e.action) - len / 2)) {
+        best = s;
+      }
+    }
+    char first[24];
+    snprintf(first, sizeof(first), "%.*s", static_cast<int>(best - e.action), e.action);
+    drawCenteredFit(first, 22 + Font5x7_ASCENT, &Font5x7, 1, theme);
+    drawCenteredFit(best + 1, 30 + Font5x7_ASCENT, &Font5x7, 1, theme);
+  }
+
+  char delta[12];
+  snprintf(delta, sizeof(delta), "%+.1f", e.delta);
+  drawCenteredFit(delta, 40 + 2 * Font5x7_ASCENT, &Font5x7, 2, e.delta >= 0 ? COLOR_FLASH : COLOR_RED_ZONE);
+
+  char now_pts[16];
+  snprintf(now_pts, sizeof(now_pts), "NOW %.1f", e.pts);
+  drawCenteredFit(now_pts, 56 + Font4x6_ASCENT, &Font4x6, 1, COLOR_POINTS);
+  canvas->setFont(nullptr);
+}
+
+// Which screen to draw: the queued events take over the scoreboard until they are all shown.
+// Returns false when the scoreboard should be drawn.
+static bool drawEventScreens(uint32_t now)
+{
+  if (!g_showing) {
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    if (g_event_count > 0) {
+      g_current = g_events[g_event_head];
+      g_event_head = (g_event_head + 1) % MAX_EVENTS;
+      --g_event_count;
+      g_showing = true;
+      g_show_ms = now;
+      ++g_event_seq;
+    }
+    xSemaphoreGive(g_lock);
+    if (!g_showing) {
+      return false;
+    }
+  }
+  const uint32_t t = now - g_show_ms;
+  const uint32_t celebrate = g_current.delta > 0 ? CELEBRATE_MS : 0;   // losses skip the party
+  if (t < celebrate) {
+    drawCelebration(*canvas, t, g_event_seq, positionColor(g_current.pos));
+    return true;
+  }
+  if (t < celebrate + UPDATE_MS) {
+    drawUpdate(g_current, t - celebrate);
+    return true;
+  }
+  g_showing = false;
+  return drawEventScreens(now);   // next queued event, or back to the scoreboard
 }
 
 // Push the frame to the panel turned ROTATION quarter turns clockwise, sending only pixels that
@@ -947,6 +1250,7 @@ static void serviceNetwork()
     server.on("/", HTTP_GET, handleIndex);
     server.on("/api/config", HTTP_GET, handleGetConfig);
     server.on("/api/config", HTTP_POST, handlePostConfig);
+    server.on("/api/test", HTTP_POST, handleTest);
     server.onNotFound([]() { server.send(404, "text/plain", "not found"); });
     server.begin();
     MDNS.addService("http", "tcp", 80);
@@ -999,7 +1303,7 @@ void loop()
   if (g_startup_running) {
     g_startup_running = drawStartup(*canvas, now - g_startup_ms);
   }
-  if (!g_startup_running) {
+  if (!g_startup_running && !drawEventScreens(now)) {
     drawScreen(now);
   }
   present();

@@ -27,20 +27,40 @@ User-facing description, data format and web API: `README.md`. This file holds t
 
 ## Layout
 
-- **Rows:** all players on one screen. `row_h = min(font height + 1, max(MIN_ROW_H 7, 64 / count))`, so 9 players get 7 px and row 63 stays free for the error pixel. When `row_h` is less than the font height (Large, Narrow), the descender line spilling into the next row is cleared before the next row is drawn.
+- **Scoreboard:** X11 4×6 font (`Font4x6`, 5 px letters), `ROW_H` 6.
+  - Player rows at y = i × 6 (rows 0–53), in the web page's order.
+  - Dotted divider at `DIVIDER_Y` 55.
+  - Total line top at `TOTAL_Y` 57.
+- **Player row:**
   - x 0–1: position bar
-  - label from x 3, shortened by `abbreviate()` (`src/abbrev.h`) until its ink ends `LABEL_GAP` px before the football space (live game) or the points. `abbreviate()` removes one character at a time, re-measuring each time, in this order: `.`/`'`/`-`, the second letter of doubled consonants, lowercase vowels (rightmost first, never a word's first letter or the name's last), spaces, lowercase consonants (rightmost first), and then truncates.
-  - football `drawBall()` 5×3 at `pts_x - BALL_GAP - BALL_W`, row offset +2: brown `COLOR_BALL` with a white lace pixel, red in the red zone. It is drawn only while the team has the ball, but its space is reserved for the whole live game (`teamPossession()`).
+  - label from x 3, shortened by `abbreviate()` (`src/abbrev.h`) until its ink ends `LABEL_GAP` px before the football space (live game) or the points
+  - football `drawBall()` 5×3 at `pts_x - BALL_GAP - BALL_W`, row offset +1: brown with a white lace pixel, red in the red zone. Drawn only while the team has the ball, but its space is reserved for the whole live game (`teamPossession()`).
   - points right-aligned to the ink edge at x 63
-- **Name fonts (`ROW_FONTS`, index `g_font` from the web page, default 1):**
-  - 0 Large: built-in 6×8. With 9 rows the rows touch and descenders are clipped.
-  - 1 Medium: X11 5×7 for label and points, exactly 7 px, clean at 9 rows
-  - 2 Narrow: u8g2 squeezed regular 7 for the label, 5×7 for the points. Descenders clipped at 9 rows.
-  - Label and points share one baseline: `RowFont::baseline`, 0 for the built-in font, which draws from the top.
+- **Total line (`drawTotalLine()`):**
+  - total of `PTS_OK` players right-aligned, gold
+  - left: `orderedGames()` (live, final, pre), rotated every `SCORES_ROTATE_MS`. `drawGameScore()` picks the first form that fits before the total: `AWY 17 HOM 10` (4×6), `AWY17 HOM10` (4×6), then the same two in TomThumb. Upcoming games use `AWY@HOM 1:00P`, then `AWY@HOM`.
 - **Points format:** `formatPoints()` switches to whole numbers at ≥ 99.95 or ≤ −9.95, so values stay within 4 characters.
-- **Order:** the roster order from the web page (↑/↓ buttons), top to bottom. `SORT_BY_POINTS 1` sorts by points instead (`std::stable_sort`, players without stats last).
-- **Fonts:** `tools/bdf2gfx.py` converts the BDF files in `tools/fonts/` (public domain, from olikraus/u8g2 at d6c8499) into `src/fonts/*.h`. Rerun it to change fonts.
-- **Previews:** `tools/render_preview.py` draws `docs/panel-preview*.png` for all three sizes.
+- **Order:** the roster order from the web page (↑/↓). `SORT_BY_POINTS 1` sorts by points instead.
+- **Fonts:** `tools/bdf2gfx.py` converts `tools/fonts/4x6.bdf` and `5x7.bdf` (public domain, from olikraus/u8g2 at d6c8499) into `src/fonts/*.h`.
+- **Previews:** `tools/render_preview.py` draws `docs/panel-preview.png` and `docs/update-preview.png`.
+
+## Events (celebration and update screens)
+
+- **Detection (`fetchTask`):** when both the old and new state are `PTS_OK` and the points moved by at least `EVENT_MIN_PTS` (1.0), an `Event` is queued (`queueEvent()`, ring buffer of `MAX_EVENTS` 6 under `g_lock`; extras are dropped).
+- **Description (`describeChange()`):** from the differences of the `STAT_KEYS` fields kept per player. Priority: TDs, field goal (distance = `fgm_yds` delta / `fgm` delta), defense INT / fumble recovery / sack, `INTERCEPTED`, `FUMBLE LOST`, the largest yardage (`RUN FOR`, `CATCH FOR`, `PASS FOR`), `EXTRA POINT`, else `POINTS UP` / `POINTS DOWN`.
+  - Stat names seen in real week 2 replies: `pass_yd`, `pass_td`, `rush_yd`, `rec`, `rec_yd`, `rec_td`, `fgm`, `fgm_yds`, `xpm`, `sack`, `td` (DEF).
+  - Not seen, unverified: `pass_int`, `rush_td`, `fum_lost`, `int`, `fum_rec`.
+- **Screens (`drawEventScreens()`, loop):**
+  - Gains: `drawCelebration()` for `CELEBRATE_MS` 2000, then `drawUpdate()` for `UPDATE_MS` 3500.
+  - Losses: `drawUpdate()` only.
+  - Then the next queued event, or the scoreboard.
+- **`drawUpdate()` layout:**
+  - position-colour frame
+  - name, uppercase, 5×7 at size 2. `drawCenteredFit()` falls back to size 1, then 4×6 with `abbreviate()`.
+  - action, 5×7, split at the space nearest the middle when too wide
+  - delta, size 2, green or red
+  - `NOW 25.1` in 4×6
+- **Test:** `POST /api/test` (web page button) queues a made-up +3.0 `RUN FOR 30 YDS` for the first player.
 
 ## Games (ESPN)
 
@@ -68,13 +88,13 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 
 | Check | Result |
 |---|---|
-| `pio run -e esp32s3` | builds, no warnings in project files. RAM 13.1 %, flash 12.3 % |
+| `pio run -e esp32s3` (v0.5) | builds, no warnings in project files. RAM 13.3 %, flash 12.5 % |
 | `pio run -e esp32s3-ota -t upload --upload-port 127.0.0.1` | builds, runs espota with `.pio/build/esp32s3-ota/firmware.bin` (no board, so no response) |
 | Picker page in headless Chromium, against a mock `/api/config` and Sleeper replies saved with curl on 2026-09-27 | search, add 8, 9th refused, save POST body correct, reload uses the cached list (0 Sleeper requests) |
 | Sleeper endpoints with curl, 2026-09-27 (week 3) | state, player lists, per-player stats, `null` for a player with no game yet, DEF stats by team ID. CORS header present |
 | Panel layout | rendered offline from `glcdfont.c` (`docs/panel-preview.png`); fits 64 px |
 | On hardware (v0.1) | works (owner, 2026-09-27) |
-| On hardware (v0.2 to v0.4) | **not yet flashed**: 9-row layout, fonts, possession football, startup animation, OTA speed |
+| On hardware (v0.2 to v0.5) | **not yet flashed**: layout, fonts, possession football, total line, celebration and update screens, startup animation, OTA speed |
 | Live-game update latency | **not measured** |
 
 ## History
@@ -92,3 +112,4 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.4:** all 9 players on one screen (7 px rows). Score lines and pages removed from the panel; possession is a brown football before the points. Default name size Medium.
 - **v0.4.1:** panel order is the order set on the web page (↑ and ↓ buttons) instead of by points.
 - **v0.4.2:** OTA is a plain `[env:esp32s3-ota]` again (`upload_protocol = espota`). The custom `ota` target from v0.2 (`scripts/ota.py`) was removed: the owner could not get it to run.
+- **v0.5:** 5 px font, 10 lines (9 players + total line with rotating NFL scores). Celebration and update screens on points changes. Test button. Name-size setting removed.

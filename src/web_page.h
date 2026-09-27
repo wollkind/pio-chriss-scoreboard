@@ -49,15 +49,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
       <option value="pts_std">Standard</option>
     </select>
   </label>
-  <label>Name size
-    <select id="font">
-      <option value="0">Large (about 6 letters; cramped with 9 players)</option>
-      <option value="1">Medium (about 7-8 letters)</option>
-      <option value="2">Narrow (about 8-9 letters)</option>
-    </select>
-  </label>
   <label>Brightness <input id="brightness" type="range" min="5" max="255"></label>
   <button class="primary" id="save">Save to panel</button>
+  <button id="test" title="Play the celebration and update screens on the panel">Test celebration</button>
 </div>
 <div id="msg" class="dim"></div>
 
@@ -122,7 +116,7 @@ function renderRoster() {
   ul.replaceChildren();
   if (!roster.length) ul.append(el('li', { className: 'dim', textContent: 'No players yet.' }));
   roster.forEach((p, i) => {
-    const label = el('input', { className: 'label', value: p.label, maxLength: 15, title: 'Name on the panel; if too long, letters are left out from the middle (mostly vowels)' });
+    const label = el('input', { className: 'label', value: p.label, maxLength: 15, title: 'Name on the panel; if too long, letters are left out from the middle (mostly vowels). Shown in full on the update screen' });
     label.oninput = () => { p.label = label.value; setDirty(); };
     const up = el('button', { textContent: '↑', title: 'Move up', disabled: i === 0 });
     up.onclick = () => { [roster[i - 1], roster[i]] = [roster[i], roster[i - 1]]; setDirty(); renderRoster(); };
@@ -175,7 +169,6 @@ function applyServer(cfg, replaceRoster) {
     roster = cfg.players.map(p => ({ ...p, name: nameFor(p.id) }));
     $('scoring').value = cfg.scoring;
     $('brightness').value = cfg.brightness;
-    $('font').value = cfg.font;
   } else {
     for (const p of roster) {
       const s = cfg.players.find(q => q.id === p.id);
@@ -196,7 +189,6 @@ $('save').onclick = async () => {
   const body = {
     scoring: $('scoring').value,
     brightness: +$('brightness').value,
-    font: +$('font').value,
     players: roster.map(({ id, label, pos, team }) => ({ id, label: label.trim() || id, pos, team })),
   };
   $('msg').textContent = 'Saving...';
@@ -210,7 +202,12 @@ $('save').onclick = async () => {
 };
 $('scoring').onchange = setDirty;
 $('brightness').onchange = setDirty;
-$('font').onchange = setDirty;
+$('test').onclick = async () => {
+  try {
+    const r = await fetch('/api/test', { method: 'POST' });
+    $('msg').textContent = r.ok ? 'Test celebration queued: watch the panel.' : 'Test failed.';
+  } catch (e) { $('msg').textContent = 'Panel not reachable.'; }
+};
 $('search').oninput = renderResults;
 
 (async () => {

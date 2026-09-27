@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render docs/panel-preview*.png: offline pictures of the panel with 9 players, one per name size.
+"""Render docs/panel-preview.png (scoreboard) and docs/update-preview.png (update screen) offline.
 
     pip install pillow
     pio run -e esp32s3          # once, so the Adafruit GFX library (TomThumb) is downloaded
@@ -98,75 +98,81 @@ def abbreviate(s, max_w, width):
     return "".join(s)
 
 
-def glcd_font():
-    """Adafruit GFX's built-in 6x8 font (glcdfont.c) as a GFXfont-like table."""
-    src = open(".pio/libdeps/esp32s3/Adafruit GFX Library/glcdfont.c").read()
-    body = src[src.index("{") + 1:src.rindex("}")]
-    body = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", body, flags=re.S))
-    cols = [int(x, 16) for x in re.findall(r"0x[0-9A-Fa-f]+", body)]
-    bitmaps, glyphs = [], []
-    for code in range(32, 127):
-        off = len(bitmaps)
-        bits = [(cols[code * 5 + c] >> r) & 1 for r in range(8) for c in range(5)]
-        bits += [0] * (-len(bits) % 8)
-        bitmaps += [int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8)]
-        glyphs.append((off, 5, 8, 6, 0, 0))
-    return bitmaps, glyphs
-
-
 def main():
+    f46 = load_font("src/fonts/Font4x6.h")
     f57 = load_font("src/fonts/Font5x7.h")
-    sq7 = load_font("src/fonts/FontSqueezed7.h")
-    glcd = glcd_font()
-    sizes = {  # name: (label font, points font, baseline, font height)
-        "large": (glcd, glcd, 0, 8),
-        "medium": (f57, f57, 6, 7),
-        "narrow": (sq7, f57, 7, 8),
-    }
+    tiny = load_font(TOMTHUMB)
     pos = {"QB": (255, 70, 70), "RB": (60, 220, 90), "WR": (70, 150, 255), "TE": (255, 160, 40),
            "K": (200, 110, 255), "DEF": (160, 160, 160)}
     rows = [  # position, label, points, game live, has the ball, red zone
-        ("RB", "Gibbs", "25.1", True, True, False),
-        ("WR", "Smith-Njigba", "22.8", True, False, False),
         ("QB", "Shough", "19.8", True, True, True),
         ("RB", "Cook", "18.3", False, False, False),
-        ("WR", "Washington", "16.3", True, False, False),
-        ("TE", "Schultz", "12.1", True, False, False),
+        ("RB", "Gibbs", "25.1", True, False, False),
+        ("WR", "Smith-Njigba", "22.8", True, False, False),
         ("WR", "Boston", "11.3", False, False, False),
-        ("TE", "Hockenson", "8.7", True, True, False),
+        ("WR", "Washington", "16.3", True, True, False),
+        ("TE", "Schultz", "12.1", True, False, False),
+        ("TE", "Hockenson", "8.7", True, False, False),
         ("DEF", "Titans", "6.8", True, False, False),
     ]
-    for name, (label_font, points_font, baseline, height) in sizes.items():
-        p = Panel()
-        row_h = min(height + 1, max(7, H // len(rows)))
-        for i, (position, label, pts, live, ball, red) in enumerate(rows):
-            y = i * row_h
-            for yy in range(y, y + row_h - 1):
-                p.put(0, yy, pos[position])
-                p.put(1, yy, pos[position])
-            glcd_pts = points_font is glcd
-            pts_x = W - (6 * len(pts) - 1 if glcd_pts else ink(points_font, pts))
-            p.text(points_font, pts_x, y + baseline, pts, (255, 215, 140))
-            ball_x = pts_x - 2 - 5
-            if ball:
-                c = (255, 40, 40) if red else (200, 105, 35)
-                for dx in range(1, 4):
-                    p.put(ball_x + dx, y + 2, c)
-                    p.put(ball_x + dx, y + 4, c)
-                for dx in range(5):
-                    p.put(ball_x + dx, y + 3, (255, 255, 255) if dx == 2 else c)
-            right = ball_x if live else pts_x
-            if label_font is glcd:
-                width = lambda s: 6 * len(s) - 1
-            else:
-                width = lambda s, f=label_font: ink(f, s)
-            p.text(label_font, 3, y + baseline, abbreviate(label, right - 2 - 3, width), (235, 235, 235))
-            if row_h < height:   # clear descenders reaching into the next row
-                for yy in range(y + row_h, y + height):
-                    for x in range(W):
-                        if 0 <= yy < H:
-                            p.px[yy][x] = None
-        p.save("docs/panel-preview.png" if name == "medium" else f"docs/panel-preview-{name}.png")
+    p = Panel()
+    for i, (position, label, pts, live, ball, red) in enumerate(rows):
+        y = i * 6
+        for yy in range(y, y + 5):
+            p.put(0, yy, pos[position])
+            p.put(1, yy, pos[position])
+        pts_x = W - ink(f46, pts)
+        p.text(f46, pts_x, y + 5, pts, (255, 215, 140))
+        ball_x = pts_x - 2 - 5
+        if ball:
+            c = (255, 40, 40) if red else (200, 105, 35)
+            for dx in range(1, 4):
+                p.put(ball_x + dx, y + 1, c)
+                p.put(ball_x + dx, y + 3, c)
+            for dx in range(5):
+                p.put(ball_x + dx, y + 2, (255, 255, 255) if dx == 2 else c)
+        right = ball_x if live else pts_x
+        p.text(f46, 3, y + 5, abbreviate(label, right - 2 - 3, lambda s: ink(f46, s)), (235, 235, 235))
+    for x in range(0, W, 2):
+        p.put(x + 1, 55, (90, 70, 130))
+    total = "%.1f" % sum(float(r[2]) for r in rows)
+    tx = W - ink(f46, total)
+    p.text(f46, tx, 62, total, (255, 190, 60))
+    score = "KC 17 MIA 10"
+    font = f46 if ink(f46, score) <= tx - 3 else tiny
+    p.text(font, 0, 62, score, (235, 235, 235))
+    p.save("docs/panel-preview.png")
+
+    # Update screen after a celebration.
+    u = Panel()
+    green = (60, 220, 90)
+    for x in range(W):
+        u.put(x, 0, green); u.put(x, H - 1, green)
+    for y in range(H):
+        u.put(0, y, green); u.put(W - 1, y, green)
+
+    def centered(font, base, s, c, scale=1):
+        w = ink(font, s) * scale
+        x0 = (W - w) // 2
+        if scale == 1:
+            u.text(font, x0, base, s, c)
+            return
+        tmp = Panel()
+        tmp.text(font, 0, 10, s, c)
+        for yy in range(H):
+            for xx in range(W):
+                if tmp.px[yy][xx]:
+                    for a in range(scale):
+                        for b in range(scale):
+                            u.put(x0 + xx * scale + a, base - (10 - yy) * scale + b, tmp.px[yy][xx])
+
+    centered(f57, 4 + 12, "GIBBS", (235, 235, 235), 2)
+    # Too wide for one line: split at the space nearest the middle, as drawUpdate() does.
+    centered(f57, 22 + 6, "RUN FOR", green)
+    centered(f57, 30 + 6, "30 YDS", green)
+    centered(f57, 40 + 12, "+3.0", (80, 255, 120), 2)
+    centered(f46, 56 + 5, "NOW 25.1", (255, 215, 140))
+    u.save("docs/update-preview.png")
 
 
 if __name__ == "__main__":

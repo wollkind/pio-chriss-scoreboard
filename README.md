@@ -16,13 +16,18 @@ Recorded from the firmware's own drawing code: `tools/sim/make_gifs.py` compiles
 
 Every scoring event starts on the scoreboard with the player's name shining, then plays the celebration for that kind of play, then the update screen, then returns to the scoreboard, where the player's points roll up like an odometer.
 
-| | | |
-|---|---|---|
-| ![Scoreboard](docs/gifs/scoreboard.gif)<br>**Scoreboard:** the total line cycles through the games (live, final, upcoming) | ![Rush](docs/gifs/rush.gif)<br>**Rush** | ![Catch](docs/gifs/catch.gif)<br>**Catch** |
-| ![Pass](docs/gifs/pass.gif)<br>**Pass** | ![Sack](docs/gifs/sack.gif)<br>**Defense (sack)** | ![Field goal](docs/gifs/field-goal.gif)<br>**Field goal** |
-| ![Rushing TD](docs/gifs/rushing-td.gif)<br>**Rushing touchdown** | ![Receiving TD](docs/gifs/receiving-td.gif)<br>**Receiving touchdown** | ![TD pass](docs/gifs/td-pass.gif)<br>**Touchdown pass** |
-| ![Defensive TD](docs/gifs/defensive-td.gif)<br>**Defensive touchdown** | ![Points up](docs/gifs/points-up.gif)<br>**Other gain (fireworks)** | ![Small gain](docs/gifs/small-gain.gif)<br>**Gain under 1 point:** rainbow name only |
-| ![Loss](docs/gifs/loss.gif)<br>**Loss:** no celebration, red update screen, points roll down | ![Startup](docs/gifs/startup.gif)<br>**Startup** (off by default: `STARTUP_ANIMATION 0`) | |
+<table>
+<tr><td align="center" width="260"><img src="docs/gifs/scoreboard.gif" width="256" height="256" alt="Scoreboard"><br><b>Scoreboard</b></td><td align="center" width="260"><img src="docs/gifs/rush.gif" width="256" height="256" alt="Rush"><br><b>Rush</b></td><td align="center" width="260"><img src="docs/gifs/catch.gif" width="256" height="256" alt="Catch"><br><b>Catch</b></td></tr>
+<tr><td align="center" width="260"><img src="docs/gifs/pass.gif" width="256" height="256" alt="Pass"><br><b>Pass</b></td><td align="center" width="260"><img src="docs/gifs/sack.gif" width="256" height="256" alt="Defense (sack)"><br><b>Defense (sack)</b></td><td align="center" width="260"><img src="docs/gifs/field-goal.gif" width="256" height="256" alt="Field goal"><br><b>Field goal</b></td></tr>
+<tr><td align="center" width="260"><img src="docs/gifs/rushing-td.gif" width="256" height="256" alt="Rushing TD"><br><b>Rushing TD</b></td><td align="center" width="260"><img src="docs/gifs/receiving-td.gif" width="256" height="256" alt="Receiving TD"><br><b>Receiving TD</b></td><td align="center" width="260"><img src="docs/gifs/td-pass.gif" width="256" height="256" alt="TD pass"><br><b>TD pass</b></td></tr>
+<tr><td align="center" width="260"><img src="docs/gifs/defensive-td.gif" width="256" height="256" alt="Defensive TD"><br><b>Defensive TD</b></td><td align="center" width="260"><img src="docs/gifs/points-up.gif" width="256" height="256" alt="Other gain"><br><b>Other gain</b></td><td align="center" width="260"><img src="docs/gifs/small-gain.gif" width="256" height="256" alt="Gain under 1 point"><br><b>Gain under 1 point</b></td></tr>
+<tr><td align="center" width="260"><img src="docs/gifs/loss.gif" width="256" height="256" alt="Loss"><br><b>Loss</b></td><td align="center" width="260"><img src="docs/gifs/startup.gif" width="256" height="256" alt="Startup (off by default)"><br><b>Startup (off by default)</b></td></tr>
+</table>
+
+- **Scoreboard:** the total line cycles through the games: live, then final, then upcoming.
+- **Gain under 1 point:** the name lights up in rainbow colours; there is no celebration or update screen.
+- **Loss:** no celebration, a red update screen, and the points roll down.
+- **Startup:** off by default (`STARTUP_ANIMATION 0` in `src/main.cpp`).
 
 To redraw them after changing the firmware: `pip install pillow`, run `pio run -e esp32s3` once (so the libraries are downloaded), then `python tools/sim/make_gifs.py`.
 

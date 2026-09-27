@@ -1,10 +1,10 @@
 # pio-chriss-scoreboard
 
-A live fantasy football scoreboard for a 64×64 HUB75 LED panel on the **Waveshare ESP32-S3-RGB-Matrix** board. It shows up to 9 chosen players, their fantasy points for the current NFL week, and the live score of each player's game. The players are picked on a web page served by the board.
+A live fantasy football scoreboard for a 64×64 HUB75 LED panel on the **Waveshare ESP32-S3-RGB-Matrix** board. It shows up to 9 chosen players on one screen, with their fantasy points for the current NFL week and a football next to anyone whose team has the ball. The players are picked on a web page served by the board.
 
 ![Panel layout preview](docs/panel-preview.png)
 
-*One page at the Medium name size, drawn offline with the panel's fonts from made-up data (`tools/render_preview.py`); not a photo.*
+*9 players at the Medium name size, drawn offline with the panel's fonts from made-up data (`tools/render_preview.py`); not a photo.*
 
 Plain-language instructions for guests (finding the board, picking players): [`GUIDE.md`](GUIDE.md).
 
@@ -15,42 +15,34 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 | v0.1 | picker page, weekly points, 8 rows | **works** (tested by the owner) |
 | v0.2 | 9 players, pages, game score lines with possession, name sizes, startup animation, faster OTA and `ota` target | not yet flashed |
 | v0.3 | long labels shortened from the middle | not yet flashed |
-| v0.3.1 (current `main`) | fix: ESPN scoreboard parse failed (JSON nesting limit) | not yet flashed |
+| v0.3.1 | fix: ESPN scoreboard parse failed (JSON nesting limit) | not yet flashed |
+| v0.4 (current `main`) | all 9 players on one screen; score lines and pages removed; possession shown as a brown football before the points; Medium is the default name size | not yet flashed |
 
 Open points:
 - **Possession marker:** checked against live games on 2026-09-27 at 17:20 UTC; the fields are as expected (see the ESPN section). v0.2 and v0.3 had a bug: ArduinoJson's default nesting limit rejected ESPN's reply, so every scoreboard fetch failed. It is fixed on `main` (v0.3.1).
-- **Halftime:** the status name `STATUS_HALFTIME` has not been seen in a live reply yet.
 - **OTA flashing speed:** flashing firmware over WiFi was very slow on v0.1. The fix (WiFi modem sleep off) is part of the firmware on the board, so it only helps once v0.2 or later is running: the OTA flash that installs v0.2 over v0.1 is still slow (or flash that one over USB). The speed of later OTA flashes has not been measured.
-- **Data delay:** how soon points and scores on the panel change after a play has not been measured.
+- **Data delay:** how soon points and possession on the panel change after a play has not been measured.
 
 ## What it shows
 
 - **Startup:** a football is kicked through the goalposts, a rainbow pinwheel spins up and dissolves into confetti, and the panel says "GOOD AFTERNOON CHAMPIONS !!!" (about 9 s, while WiFi connects). `STARTUP_ANIMATION 0` skips it.
 - **Players:** up to 9, sorted by points (highest first). Players with no stats yet go last.
-- **Each player** is a block:
+- **All players on one screen:** one row per player, 7 px each with 9 players (up to 8 px with fewer).
+- **Each row:**
   - a position bar on the left: QB red, RB green, WR blue, TE orange, K purple, DEF grey
   - the label (editable on the web page). A label too wide for the row is shortened from the middle, so it stays readable: doubled letters, then vowels, then other letters go, keeping the first and last letters (`Washington` → `Washngtn` → `Wshngtn`, `Hockenson` → `Hocknsn`). See `src/abbrev.h`.
+  - a small football (5×3, brown with a white lace) just before the points while the player's team has the ball. It turns red inside the opponent's 20. While the player's game is live, the football's space stays reserved, so the label doesn't change length every time possession changes.
   - this week's points, right-aligned
-  - underneath, in a tiny font, the player's game:
-
-    | Game state | Shown |
-    |---|---|
-    | not started | `@MIA 1:00P` (`v` for a home game, `@` for away) |
-    | live | `17-10 @MIA`, alternating every 3 s with `17-10 Q3 4:12` (or `HALF`, `OT`) |
-    | live, player's team has the ball | a small yellow football before the score; red inside the opponent's 20 |
-    | final | `35-14 @GB F` |
-    | no game this week | `BYE` |
-
-    The score is the player's team first, green when leading, red when trailing.
+- **Game scores** are not on the panel. The web page shows each player's game line (score, quarter and clock, kickoff time, final, bye).
 - **Name size**, chosen on the web page:
 
-  | Setting | Font | Letters that fit (typical) | Players per page |
+  | Setting | Font | Letters that fit (typical) | With 9 players |
   |---|---|---|---|
-  | Large | built-in 6×8 | about 6 | 4 |
-  | Medium | X11 5×7 | about 7–8 | 5 |
-  | Narrow | u8g2 "squeezed" 7 px, proportional | about 8–9 | 4 |
+  | Large | built-in 6×8 | about 6 | cramped: rows touch, descenders (g, j, p, q, y) are clipped |
+  | Medium (default) | X11 5×7 | about 7–8 | clean: the font is exactly 7 px tall |
+  | Narrow | u8g2 "squeezed" 7 px, proportional | about 8–9 | descenders clipped |
 
-- **Pages:** when the players don't fit on one screen, they are split evenly over pages that switch every 7 s (9 players on Medium: 5 + 4). Dots on the bottom row show the page.
+  Pictures of all three with 9 players: `docs/panel-preview.png` (Medium), `docs/panel-preview-large.png`, `docs/panel-preview-narrow.png`.
 - **Points:**
   - `-` in grey: no stats this week yet (game not started, or bye)
   - green for 8 s after a change
@@ -64,7 +56,7 @@ Open points:
 ## Setup
 
 1. Copy `src/secrets.example.h` to `src/secrets.h` (git-ignored) and fill in the WiFi SSID and password. Optionally set `OTA_PASSWORD`.
-   - The board needs a WiFi network with internet access: it fetches points and scores itself.
+   - The board needs a WiFi network with internet access: it fetches points and possession itself.
    - There is no setup screen and no access-point mode. Changing networks means editing `secrets.h` and reflashing.
    - A phone hotspot works. The board then uses the phone's cellular data, roughly 30 MB per hour, almost all of it the ESPN scoreboard. Anyone using the picker page has to join the same hotspot.
 2. Build and flash over USB:
@@ -121,7 +113,7 @@ The stats endpoint is the one the Sleeper app itself uses. It is not in Sleeper'
   ```
 - **Parsing:** ArduinoJson parses with a filter, so only `stats.<scoring field>` is kept.
 
-**Game scores: ESPN.** `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard` returns every game of the current week in one reply: teams, scores, status, quarter and clock. During a live game it also has `situation.possession` (the ID of the team with the ball) and `situation.isRedZone`. The endpoint is public, needs no key, and is not officially documented by ESPN.
+**Possession (and the web page's game lines): ESPN.** `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard` returns every game of the current week in one reply: teams, scores, status, quarter and clock. During a live game it also has `situation.possession` (the ID of the team with the ball) and `situation.isRedZone`. The endpoint is public, needs no key, and is not officially documented by ESPN.
 - **Team codes:** ESPN's match Sleeper's except Washington (`WSH` at ESPN, `WAS` at Sleeper). The firmware converts it.
 - **Checked live (2026-09-27, 1 PM games, 1st quarter):**
   - `situation.possession` is a string team ID (`"24"`) matching `competitors[].team.id`
@@ -189,4 +181,4 @@ Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app sl
 - **HUB75 driver:** [ESP32-HUB75-MatrixPanel-DMA](https://github.com/mrcodetastic/ESP32-HUB75-MatrixPanel-DMA) by mrcodetastic, vendored from Waveshare's examples.
 - **Board configuration:** Waveshare's [ESP32-S3-RGB-Matrix](https://www.waveshare.com/esp32-s3-rgb-matrix.htm) examples (Apache-2.0), via infopanel64.
 - **Data:** [Sleeper](https://sleeper.com/), under its API terms (non-commercial use); game scores from ESPN's public scoreboard endpoint.
-- **Fonts:** X11 misc-fixed 5×7 (public domain) and u8g2 "squeezed" regular 7 (public domain), both taken as BDF from [olikraus/u8g2](https://github.com/olikraus/u8g2). TomThumb ships with Adafruit GFX.
+- **Fonts:** X11 misc-fixed 5×7 (public domain) and u8g2 "squeezed" regular 7 (public domain), both taken as BDF from [olikraus/u8g2](https://github.com/olikraus/u8g2).

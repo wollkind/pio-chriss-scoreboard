@@ -51,7 +51,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   </label>
   <label>Name size
     <select id="font">
-      <option value="0">Large (about 6 letters)</option>
+      <option value="0">Large (about 6 letters; cramped with 9 players)</option>
       <option value="1">Medium (about 7-8 letters)</option>
       <option value="2">Narrow (about 8-9 letters)</option>
     </select>

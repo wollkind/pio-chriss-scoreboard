@@ -55,11 +55,11 @@ The panel is small, so each player is shown with a short name. The page fills in
 - If a name is too long, the panel leaves out letters from the middle, mostly vowels, so it stays readable. For example `Washington` becomes `Wshngtn`. For a different short form, type your own.
 - **Name size** changes how many letters fit:
 
-  | Name size | Letters | Players per screen |
+  | Name size | Letters | With 9 players |
   |---|---|---|
-  | Large | about 6 | 4 |
-  | Medium | about 7 or 8 | 5 |
-  | Narrow | about 8 or 9 | 4 |
+  | Large | about 6 | cramped, rows touch |
+  | Medium | about 7 or 8 | clearest (recommended) |
+  | Narrow | about 8 or 9 | tails of g, j, p, q, y are cut off |
 
   Try one, tap **Save to panel**, and look at the panel.
 
@@ -95,13 +95,9 @@ The scoreboard remembers the players even if it is unplugged.
 
 - When it is switched on, the panel plays a short animation, ending with **GOOD AFTERNOON CHAMPIONS !!!**
 - Each player gets a coloured stripe, the short name, then the points.
-- Under the name, in tiny letters, is the score of that player's game:
-  - `@MIA 1:00P`: the game has not started (`@` means an away game, `v` a home game)
-  - `17-10 @MIA`: the game is on. The player's team is first, green when winning, red when losing. Every few seconds it shows the quarter and clock instead, for example `Q3 4:12`.
-  - A small **yellow football** before the score: the player's team has the ball. It turns **red** near the end zone.
-  - `35-14 @GB F`: final score
-  - `BYE`: no game this week
-- With more players than fit on one screen, the panel flips between pages every few seconds. Small dots at the bottom show which page is showing.
+- All players fit on one screen, one row each.
+- A small **brown football** just before a player's points means that player's team has the ball. It turns **red** near the end zone.
+- Game scores are not on the panel. They are on the web page, under each player's name.
 - The stripe colour shows the position:
 
   | Colour | Position |
@@ -113,7 +109,7 @@ The scoreboard remembers the players even if it is unplugged.
   | Purple | K |
   | Grey | DEF |
 
-- The points and scores are for the current week. They update about every 30 seconds.
+- The points are for the current week. They update about every 30 seconds.
 - A player's points turn **green** for a few seconds when they change.
 - A grey **-** means the player has not played yet this week, or has a bye.
 - If all the numbers turn grey, the scoreboard has lost its internet connection and the points may be out of date.
@@ -128,6 +124,6 @@ The scoreboard remembers the players even if it is unplugged.
 | **The panel shows at most 9 players.** | Remove a player before adding another. |
 | **Save failed** | Reload the page and try again. |
 | A name on the panel is missing letters | That is on purpose: long names lose letters from the middle to fit. Type a shorter name yourself, or pick a different **Name size**. |
-| A tiny red dot in the bottom-right corner | The scoreboard could not fetch the latest points or scores. It keeps trying every 30 seconds. |
+| A tiny red dot in the bottom-right corner | The scoreboard could not fetch the latest points or game data. It keeps trying every 30 seconds. |
 | The panel says **WIFI..** | The scoreboard is still connecting to WiFi. Wait a minute. If it stays, the WiFi details in the scoreboard need fixing by whoever set it up. |
 | The panel says **SET WIFI** | The scoreboard has no WiFi details. Whoever set it up needs to add them. |

@@ -1,11 +1,10 @@
 // pio-chriss-scoreboard: live fantasy football points on the Waveshare ESP32-S3-RGB-Matrix with a
 // 64x64 HUB75 panel.
 //
-// Up to 9 players, sorted by points (highest first). Each player gets a block: a position-coloured
-// bar, a label and this week's fantasy points, and underneath in a tiny font the score of that
-// player's NFL game, with a marker when the player's team has the ball. Blocks that don't fit on
-// one screen are split over pages that alternate every PAGE_MS. A player's points turn green for a
-// few seconds when they change.
+// Up to 9 players on one screen, sorted by points (highest first). Each player gets a row: a
+// position-coloured bar, a label and this week's fantasy points, with a small football before the
+// points while the player's team has the ball. A player's points turn green for a few seconds when
+// they change.
 //
 // Players are picked on a web page served by the board (http://scoreboard.local/). The page's
 // JavaScript downloads Sleeper's player list itself, so the board never handles that 5 MB file; it
@@ -14,8 +13,9 @@
 // Data, fetched by a background task on core 0 every POLL_MS:
 //   - Points: Sleeper (no API key). /v1/state/nfl gives the season and week, then each player's
 //     stats for that week (api.sleeper.com/stats/nfl/player/<id>, about 1 KB each).
-//   - Game scores and possession: ESPN's public scoreboard (one ~270 KB reply for the whole week,
-//     parsed as a stream through a filter, so only a few hundred bytes are kept).
+//   - Possession: ESPN's public scoreboard (one ~270 KB reply for the whole week, parsed as a
+//     stream through a filter, so only a few hundred bytes are kept). The game scores it also
+//     carries are shown on the web page, not the panel.
 //
 // Boot plays a startup animation (startup.cpp) while WiFi connects.
 //
@@ -31,7 +31,6 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
-#include <Fonts/TomThumb.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <algorithm>
 #include <cmath>
@@ -61,11 +60,11 @@
 #define MAX_PLAYERS        9
 #define LABEL_X            3       // after the 2 px position bar
 #define LABEL_GAP          2       // minimum blank columns between the label and the points
-#define SCORE_H            5       // tiny score line under each player (TomThumb caps are 5 px)
+#define MIN_ROW_H          7       // 9 rows x 7 px = 63; row 63 stays free for the error pixel
+#define BALL_W             5       // possession football, 5x3
+#define BALL_GAP           2       // blank columns between the football and the points
 #define SORT_BY_POINTS     1       // 0: keep the order chosen on the web page
 #define FLASH_MS           8000    // points that changed are drawn green this long
-#define PAGE_MS            7000    // time on each page when the players need more than one
-#define SCORE_ALT_MS       3000    // live games alternate "score + opponent" and "score + clock"
 #define STARTUP_ANIMATION  1       // 0: skip the startup animation
 #define HOSTNAME           "scoreboard"
 
@@ -139,7 +138,7 @@ static int g_count = 0;
 static uint32_t g_generation = 0;             // bumped on every roster change
 static char g_scoring[12] = "pts_ppr";        // pts_ppr, pts_half_ppr or pts_std
 static int g_brightness = DEFAULT_BRIGHTNESS;
-static int g_font = 0;                        // index into ROW_FONTS
+static int g_font = 1;                        // index into ROW_FONTS; Medium fits 9 rows cleanly
 static char g_season[8] = "";
 static char g_season_type[12] = "regular";
 static int g_week = 0;
@@ -164,11 +163,8 @@ static const uint16_t COLOR_FLASH   = rgb565(80, 255, 120);
 static const uint16_t COLOR_DIM     = rgb565(80, 80, 80);
 static const uint16_t COLOR_WARN    = rgb565(255, 140, 0);
 static const uint16_t COLOR_INFO    = rgb565(120, 200, 240);
-static const uint16_t COLOR_SCORE_INFO = rgb565(110, 130, 160);   // opponent, quarter, kickoff time
-static const uint16_t COLOR_LEADING = rgb565(90, 230, 110);
-static const uint16_t COLOR_TRAILING = rgb565(255, 90, 80);
-static const uint16_t COLOR_TIED    = rgb565(220, 220, 220);
-static const uint16_t COLOR_BALL    = rgb565(255, 200, 0);
+static const uint16_t COLOR_BALL    = rgb565(200, 105, 35);    // leather brown
+static const uint16_t COLOR_LACE    = rgb565(255, 255, 255);
 static const uint16_t COLOR_RED_ZONE = rgb565(255, 40, 40);
 
 static uint16_t positionColor(const char *pos)
@@ -200,13 +196,12 @@ static const Game *findGame(const char *team)
   return nullptr;
 }
 
-// The score line for one player's team, split into coloured parts so the panel and the web page
-// share it. `alt` picks the clock instead of the opponent for live games.
+// The game line for one player's team, shown on the web page (the panel only shows possession).
+// `alt` picks the clock instead of the opponent for live games.
 struct ScoreLine {
   bool has_ball;
   bool red_zone;
   char score[10];        // "17-10", own team first
-  uint16_t score_color;
   char info[12];         // "@MIA", "Q3 4:12", "HALF", "F", "BYE", "@MIA 1:00P"
 };
 
@@ -233,7 +228,6 @@ static bool scoreLine(const char *team, bool alt, ScoreLine &out)
   const int own = home ? game->home_score : game->away_score;
   const int other = home ? game->away_score : game->home_score;
   snprintf(out.score, sizeof(out.score), "%d-%d", own, other);
-  out.score_color = own > other ? COLOR_LEADING : (own < other ? COLOR_TRAILING : COLOR_TIED);
   if (game->state == GAME_FINAL) {
     snprintf(out.info, sizeof(out.info), "%s F", versus);
     return true;
@@ -715,20 +709,32 @@ static void drawStatus(const char *line1, uint16_t c1, const char *line2, uint16
   }
 }
 
-// Possession marker: a tiny football, 4x3, yellow (red inside the opponent's 20).
-static void drawBallMarker(int x, int y, bool red_zone)
+// Possession marker: a football, 5x3, brown with a white lace (red inside the opponent's 20).
+//   .###.
+//   ##-##    (- = lace)
+//   .###.
+static void drawBall(int x, int y, bool red_zone)
 {
   const uint16_t c = red_zone ? COLOR_RED_ZONE : COLOR_BALL;
-  canvas->drawFastHLine(x + 1, y, 2, c);
-  canvas->drawFastHLine(x, y + 1, 4, c);
-  canvas->drawFastHLine(x + 1, y + 2, 2, c);
+  canvas->drawFastHLine(x + 1, y, 3, c);
+  canvas->drawFastHLine(x, y + 1, 5, c);
+  canvas->drawPixel(x + 2, y + 1, COLOR_LACE);
+  canvas->drawFastHLine(x + 1, y + 2, 3, c);
 }
 
-// One player: name row (label + points), then the tiny score line under it.
-static void drawPlayer(const Player &p, int y, const RowFont &rf, bool stale, uint32_t now)
+// Possession state of a team's game. Caller holds g_lock.
+static void teamPossession(const char *team, bool &live, bool &has_ball, bool &red_zone)
 {
-  const int block_h = rf.height + SCORE_H;
-  canvas->fillRect(0, y, 2, block_h - 1, positionColor(p.pos));
+  const Game *game = team[0] ? findGame(team) : nullptr;
+  live = game && game->state == GAME_LIVE;
+  has_ball = live && game->poss[0] && !strcmp(game->poss, team);
+  red_zone = has_ball && game->red_zone;
+}
+
+// One player row, `row_h` pixels tall starting at y.
+static void drawPlayer(const Player &p, int y, int row_h, const RowFont &rf, bool stale, uint32_t now)
+{
+  canvas->fillRect(0, y, 2, row_h - 1, positionColor(p.pos));
 
   // Points, right-aligned to the panel edge.
   char pts[8];
@@ -751,38 +757,26 @@ static void drawPlayer(const Player &p, int y, const RowFont &rf, bool stale, ui
   canvas->setCursor(pts_x, y + rf.baseline);
   canvas->print(pts);
 
-  // Label: shortened from the middle until it fits before the points (abbrev.h).
+  // Football before the points while the team has the ball. Its space is kept for the whole game,
+  // so the label doesn't change length every time possession changes.
+  bool live, has_ball, red_zone;
+  xSemaphoreTake(g_lock, portMAX_DELAY);
+  teamPossession(p.team, live, has_ball, red_zone);
+  xSemaphoreGive(g_lock);
+  const int ball_x = pts_x - BALL_GAP - BALL_W;
+  if (has_ball) {
+    drawBall(ball_x, y + 2, red_zone);
+  }
+
+  // Label: shortened from the middle until it fits (abbrev.h).
   canvas->setFont(rf.label);
   char label[sizeof(Player::label)];
   copyStr(label, sizeof(label), p.label);
-  abbreviate(label, pts_x - LABEL_GAP - LABEL_X, [&rf](const char *text) { return inkWidth(text, rf.label); });
+  const int right = live ? ball_x : pts_x;
+  abbreviate(label, right - LABEL_GAP - LABEL_X, [&rf](const char *text) { return inkWidth(text, rf.label); });
   canvas->setTextColor(COLOR_TEXT);
   canvas->setCursor(LABEL_X, y + rf.baseline);
   canvas->print(label);
-
-  // Score line, TomThumb: [ball] 17-10 @MIA (or the clock, alternating).
-  ScoreLine line;
-  xSemaphoreTake(g_lock, portMAX_DELAY);
-  const bool have = scoreLine(p.team, (now / SCORE_ALT_MS) % 2 == 1, line);
-  xSemaphoreGive(g_lock);
-  if (!have) {
-    return;
-  }
-  const int top = y + rf.height;
-  int x = LABEL_X;
-  if (line.has_ball) {
-    drawBallMarker(x, top + 1, line.red_zone);
-  }
-  x += 5;   // the column stays reserved so the score doesn't jump when possession changes
-  canvas->setFont(&TomThumb);
-  canvas->setCursor(x, top + SCORE_H);
-  if (line.score[0]) {
-    canvas->setTextColor(stale ? COLOR_DIM : line.score_color);
-    canvas->print(line.score);
-    canvas->print(' ');
-  }
-  canvas->setTextColor(COLOR_SCORE_INFO);
-  canvas->print(line.info);
 }
 
 static void drawScreen(uint32_t now)
@@ -832,29 +826,20 @@ static void drawScreen(uint32_t now)
     });
   }
 
-  // Pages: as many blocks as fit above the page-dot row, spread evenly (9 at 5 per page: 5 + 4).
+  // Everyone on one screen: rows of 64 / count px, at least MIN_ROW_H (9 players: 7 px) and at
+  // most the font's height plus a blank line. When a row is shorter than the font, descenders
+  // (g, j, p, q, y) that would reach into the next row are cleared before that row is drawn.
   const RowFont &rf = ROW_FONTS[font];
-  const int block_h = rf.height + SCORE_H;
-  const int fit = std::max(1, (PANEL_H - 1) / block_h);
-  const int pages = (count + fit - 1) / fit;
-  const int per_page = (count + pages - 1) / pages;
-  const int page = pages > 1 ? static_cast<int>((now / PAGE_MS) % pages) : 0;
-  const int first = page * per_page;
-  const int last = std::min(count, first + per_page);
-
+  const int row_h = std::min(rf.height + 1, std::max(MIN_ROW_H, PANEL_H / count));
   const bool stale = g_last_ok_ms == 0 || now - g_last_ok_ms > STALE_MS;
-  for (int i = first; i < last; ++i) {
-    drawPlayer(rows[i], (i - first) * block_h, rf, stale, now);
-  }
-  canvas->setFont(nullptr);
-
-  // Page dots, bottom row, centred.
-  if (pages > 1) {
-    const int x0 = (PANEL_W - (pages * 3 - 1)) / 2;
-    for (int k = 0; k < pages; ++k) {
-      canvas->drawFastHLine(x0 + k * 3, PANEL_H - 1, 2, k == page ? COLOR_TEXT : COLOR_DIM);
+  for (int i = 0; i < count; ++i) {
+    const int y = i * row_h;
+    drawPlayer(rows[i], y, row_h, rf, stale, now);
+    if (row_h < rf.height) {
+      canvas->fillRect(0, y + row_h, PANEL_W, rf.height - row_h, 0);
     }
   }
+  canvas->setFont(nullptr);
 
   // Fetch problem: one red pixel in the bottom-right corner.
   if (g_status != 0 && g_status != HTTP_CODE_OK) {

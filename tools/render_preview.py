@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Render docs/panel-preview.png: an offline picture of one page of the panel (Medium name size).
+"""Render docs/panel-preview*.png: offline pictures of the panel with 9 players, one per name size.
 
     pip install pillow
     pio run -e esp32s3          # once, so the Adafruit GFX library (TomThumb) is downloaded
     python tools/render_preview.py
 
 The fonts are read from the same headers the firmware uses, and labels are shortened with a port
-of src/abbrev.h. The players, points and game lines are made-up sample data.
+of src/abbrev.h. The points and possession states are made-up sample data.
 """
 import re
 from PIL import Image, ImageDraw
@@ -98,43 +98,75 @@ def abbreviate(s, max_w, width):
     return "".join(s)
 
 
+def glcd_font():
+    """Adafruit GFX's built-in 6x8 font (glcdfont.c) as a GFXfont-like table."""
+    src = open(".pio/libdeps/esp32s3/Adafruit GFX Library/glcdfont.c").read()
+    body = src[src.index("{") + 1:src.rindex("}")]
+    body = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", body, flags=re.S))
+    cols = [int(x, 16) for x in re.findall(r"0x[0-9A-Fa-f]+", body)]
+    bitmaps, glyphs = [], []
+    for code in range(32, 127):
+        off = len(bitmaps)
+        bits = [(cols[code * 5 + c] >> r) & 1 for r in range(8) for c in range(5)]
+        bits += [0] * (-len(bits) % 8)
+        bitmaps += [int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8)]
+        glyphs.append((off, 5, 8, 6, 0, 0))
+    return bitmaps, glyphs
+
+
 def main():
     f57 = load_font("src/fonts/Font5x7.h")
-    tiny = load_font(TOMTHUMB)
+    sq7 = load_font("src/fonts/FontSqueezed7.h")
+    glcd = glcd_font()
+    sizes = {  # name: (label font, points font, baseline, font height)
+        "large": (glcd, glcd, 0, 8),
+        "medium": (f57, f57, 6, 7),
+        "narrow": (sq7, f57, 7, 8),
+    }
     pos = {"QB": (255, 70, 70), "RB": (60, 220, 90), "WR": (70, 150, 255), "TE": (255, 160, 40),
            "K": (200, 110, 255), "DEF": (160, 160, 160)}
-    lead, trail, tied, info = (90, 230, 110), (255, 90, 80), (220, 220, 220), (110, 130, 160)
-    rows = [  # position, label, points, score line segments, has the ball
-        ("RB", "Gibbs", "25.1", [("21-14", lead), ("vWAS", info)], True),
-        ("WR", "Smith-Njigba", "22.8", [("24-27", trail), ("Q4 2:03", info)], False),
-        ("QB", "Shough", "19.8", [("17-17", tied), ("HALF", info)], False),
-        ("RB", "Cook", "18.3", [("31-10", lead), ("vLAC F", info)], False),
-        ("WR", "Washington", "16.3", [("@SF 4:05P", info)], False),
+    rows = [  # position, label, points, game live, has the ball, red zone
+        ("RB", "Gibbs", "25.1", True, True, False),
+        ("WR", "Smith-Njigba", "22.8", True, False, False),
+        ("QB", "Shough", "19.8", True, True, True),
+        ("RB", "Cook", "18.3", False, False, False),
+        ("WR", "Washington", "16.3", True, False, False),
+        ("TE", "Schultz", "12.1", True, False, False),
+        ("WR", "Boston", "11.3", False, False, False),
+        ("TE", "Hockenson", "8.7", True, True, False),
+        ("DEF", "Titans", "6.8", True, False, False),
     ]
-    p = Panel()
-    block = 7 + 5   # Medium: 7 px name row + 5 px score line
-    for i, (position, label, pts, segments, ball) in enumerate(rows):
-        y = i * block
-        for yy in range(y, y + block - 1):
-            p.put(0, yy, pos[position])
-            p.put(1, yy, pos[position])
-        pts_x = W - ink(f57, pts)
-        p.text(f57, pts_x, y + 6, pts, (255, 215, 140))
-        p.text(f57, 3, y + 6, abbreviate(label, pts_x - 2 - 3, lambda s: ink(f57, s)), (235, 235, 235))
-        top = y + 7
-        if ball:
-            for dx in (1, 2):
-                p.put(3 + dx, top + 1, (255, 200, 0))
-                p.put(3 + dx, top + 3, (255, 200, 0))
-            for dx in range(4):
-                p.put(3 + dx, top + 2, (255, 200, 0))
-        x = 8
-        for k, (text, color) in enumerate(segments):
-            x = p.text(tiny, x, top + 5, text + (" " if k < len(segments) - 1 else ""), color)
-    for k in range(2):   # page dots: page 1 of 2
-        for dx in range(2):
-            p.put((W - 5) // 2 + k * 3 + dx, H - 1, (235, 235, 235) if k == 0 else (80, 80, 80))
-    p.save("docs/panel-preview.png")
+    for name, (label_font, points_font, baseline, height) in sizes.items():
+        p = Panel()
+        row_h = min(height + 1, max(7, H // len(rows)))
+        for i, (position, label, pts, live, ball, red) in enumerate(rows):
+            y = i * row_h
+            for yy in range(y, y + row_h - 1):
+                p.put(0, yy, pos[position])
+                p.put(1, yy, pos[position])
+            glcd_pts = points_font is glcd
+            pts_x = W - (6 * len(pts) - 1 if glcd_pts else ink(points_font, pts))
+            p.text(points_font, pts_x, y + baseline, pts, (255, 215, 140))
+            ball_x = pts_x - 2 - 5
+            if ball:
+                c = (255, 40, 40) if red else (200, 105, 35)
+                for dx in range(1, 4):
+                    p.put(ball_x + dx, y + 2, c)
+                    p.put(ball_x + dx, y + 4, c)
+                for dx in range(5):
+                    p.put(ball_x + dx, y + 3, (255, 255, 255) if dx == 2 else c)
+            right = ball_x if live else pts_x
+            if label_font is glcd:
+                width = lambda s: 6 * len(s) - 1
+            else:
+                width = lambda s, f=label_font: ink(f, s)
+            p.text(label_font, 3, y + baseline, abbreviate(label, right - 2 - 3, width), (235, 235, 235))
+            if row_h < height:   # clear descenders reaching into the next row
+                for yy in range(y + row_h, y + height):
+                    for x in range(W):
+                        if 0 <= yy < H:
+                            p.px[yy][x] = None
+        p.save("docs/panel-preview.png" if name == "medium" else f"docs/panel-preview-{name}.png")
 
 
 if __name__ == "__main__":

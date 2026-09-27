@@ -27,25 +27,25 @@ User-facing description, data format and web API: `README.md`. This file holds t
 
 ## Layout
 
-- **Blocks:** one per player. A name row of `RowFont::height`, then a `SCORE_H` 5 px score line in TomThumb.
+- **Rows:** all players on one screen. `row_h = min(font height + 1, max(MIN_ROW_H 7, 64 / count))`, so 9 players get 7 px and row 63 stays free for the error pixel. When `row_h` is less than the font height (Large, Narrow), the descender line spilling into the next row is cleared before the next row is drawn.
   - x 0–1: position bar
-  - label from x 3, shortened by `abbreviate()` (`src/abbrev.h`) until its ink ends `LABEL_GAP` px before the points. It removes one character at a time, re-measuring each time, in this order: `.`/`'`/`-`, the second letter of doubled consonants, lowercase vowels (rightmost first, never a word's first letter or the name's last), spaces, lowercase consonants (rightmost first), and then truncates.
+  - label from x 3, shortened by `abbreviate()` (`src/abbrev.h`) until its ink ends `LABEL_GAP` px before the football space (live game) or the points. `abbreviate()` removes one character at a time, re-measuring each time, in this order: `.`/`'`/`-`, the second letter of doubled consonants, lowercase vowels (rightmost first, never a word's first letter or the name's last), spaces, lowercase consonants (rightmost first), and then truncates.
+  - football `drawBall()` 5×3 at `pts_x - BALL_GAP - BALL_W`, row offset +2: brown `COLOR_BALL` with a white lace pixel, red in the red zone. It is drawn only while the team has the ball, but its space is reserved for the whole live game (`teamPossession()`).
   - points right-aligned to the ink edge at x 63
-  - score line: ball marker at x 3–6 (column always reserved), text from x 8. The longest line, `17-10 Q3 4:12`, is 13 × 4 px and ends at x 59.
-- **Name fonts (`ROW_FONTS`, index `g_font` from the web page):**
-  - 0 Large: built-in 6×8, block 13 px, 4 per page
-  - 1 Medium: X11 5×7 for label and points, block 12 px, 5 per page
-  - 2 Narrow: u8g2 squeezed regular 7 for the label, 5×7 for the points, block 13 px, 4 per page
+- **Name fonts (`ROW_FONTS`, index `g_font` from the web page, default 1):**
+  - 0 Large: built-in 6×8. With 9 rows the rows touch and descenders are clipped.
+  - 1 Medium: X11 5×7 for label and points, exactly 7 px, clean at 9 rows
+  - 2 Narrow: u8g2 squeezed regular 7 for the label, 5×7 for the points. Descenders clipped at 9 rows.
   - Label and points share one baseline: `RowFont::baseline`, 0 for the built-in font, which draws from the top.
-- **Pages:** blocks that fit above the page-dot row (row 63), split evenly: `per_page = ceil(count / pages)`. The page is picked from `millis() / PAGE_MS`.
 - **Points format:** `formatPoints()` switches to whole numbers at ≥ 99.95 or ≤ −9.95, so values stay within 4 characters.
 - **Sorting:** `SORT_BY_POINTS` 1 sorts with `std::stable_sort`. Players without stats sort last.
 - **Fonts:** `tools/bdf2gfx.py` converts the BDF files in `tools/fonts/` (public domain, from olikraus/u8g2 at d6c8499) into `src/fonts/*.h`. Rerun it to change fonts.
+- **Previews:** `tools/render_preview.py` draws `docs/panel-preview*.png` for all three sizes.
 
 ## Games (ESPN)
 
 - `fetchScoreboard()` streams the reply through an ArduinoJson filter straight off the connection (`http.getStream()`, HTTP/1.0 so there is no chunk framing).
-- Games are stored in `g_games`. `scoreLine()` builds the text for a team; the panel and `/api/config` (`game` field) both use it.
+- Games are stored in `g_games`. The panel uses them only for possession (`teamPossession()`). `scoreLine()` builds the game text for `/api/config` (`game` field), which the web page shows.
 - Possession: `situation.possession` is an ESPN team ID (string), matched to the competitor's `team.id`. Verified against live games on 2026-09-27: the parse, run on the computer with the same filter, gave the right team with the ball and red zone for all 9 live games. `STATUS_HALFTIME` is still unseen.
 - Nesting: the reply is 15 levels deep. ArduinoJson's default limit (10) applies to filtered-out parts too, so `getJson()` passes `NestingLimit(JSON_NESTING_LIMIT)` (32). Without it, v0.2 and v0.3 failed every scoreboard fetch with −2.
 - `WSH` is converted to Sleeper's `WAS`.
@@ -74,7 +74,7 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 | Sleeper endpoints with curl, 2026-09-27 (week 3) | state, player lists, per-player stats, `null` for a player with no game yet, DEF stats by team ID. CORS header present |
 | Panel layout | rendered offline from `glcdfont.c` (`docs/panel-preview.png`); fits 64 px |
 | On hardware (v0.1) | works (owner, 2026-09-27) |
-| On hardware (v0.2) | **not yet flashed**: 9 players, fonts, score lines, pages, startup animation, OTA speed |
+| On hardware (v0.2 to v0.4) | **not yet flashed**: 9-row layout, fonts, possession football, startup animation, OTA speed |
 | Live-game update latency | **not measured** |
 
 ## History
@@ -89,3 +89,4 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
   - OTA: `ota` target on the main environment instead of a separate environment, no modem sleep, no espota `--debug`
 - **v0.3:** labels too wide for the row are shortened from the middle (`abbrev.h`) instead of cut off at the end
 - **v0.3.1:** fix: ESPN scoreboard parse failed with TooDeep; JSON nesting limit raised to 32
+- **v0.4:** all 9 players on one screen (7 px rows). Score lines and pages removed from the panel; possession is a brown football before the points. Default name size Medium.

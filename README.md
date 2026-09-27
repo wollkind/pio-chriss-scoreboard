@@ -21,7 +21,8 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 | v0.4 | all 9 players on one screen; score lines and pages removed; possession shown as a brown football before the points; Medium is the default name size | not yet flashed |
 | v0.4.1 | panel order set on the web page with ↑/↓ buttons instead of by points | not yet flashed |
 | v0.4.2 | OTA back to a plain `esp32s3-ota` environment (the custom `ota` target is removed) | not yet flashed |
-| v0.5 (current `main`) | 5 px font and 10 lines: 9 players plus a total line with rotating NFL scores; full-screen celebration and update screens when points change; test button; name-size setting removed | not yet flashed |
+| v0.5 | 5 px font and 10 lines: 9 players plus a total line with rotating NFL scores; full-screen celebration and update screens when points change; test button; name-size setting removed | running; NFL scores missing (fixed in v0.6) |
+| v0.6 (current `main`) | fix: NFL scores and possession (ESPN reply read in full before parsing); a celebration for each kind of play, touchdowns separate; every gain celebrates; one test button per celebration | flashed by OTA 2026-09-27; scores confirmed through `/api/config`, celebrations not yet watched |
 
 Open points:
 - **Possession marker:** checked against live games on 2026-09-27 at 17:20 UTC; the fields are as expected (see the ESPN section). v0.2 and v0.3 had a bug: ArduinoJson's default nesting limit rejected ESPN's reply, so every scoreboard fetch failed. It is fixed on `main` (v0.3.1).
@@ -44,13 +45,23 @@ Open points:
   - this week's points, right-aligned
 - **Total line:**
   - right: the total of all players' points, in gold
-  - left: NFL games in rotation, 3 s each; live games first, then finals, then games not started. Live games are white (`KC 17 MIA 10`), finals grey, upcoming games blue (`ARI@SF 4:05P`). A score too wide for its space is squeezed (spaces dropped, then the narrower TomThumb font).
-- **When points change** by at least `EVENT_MIN_PTS` (1.0) in one fetch, the scoreboard gives way to full screens, then returns:
-  1. **Celebration** (points gained only, 2 s): four fireworks bursts in the player's position colour and rainbow sparks, with a flash at each burst (`src/celebrate.cpp`).
+  - left: NFL games in rotation, 3 s each; live games first, then finals, then games not started. Live games are white (`KC 17 MIA 10`), finals grey, upcoming games blue (`ARI - SF 4:05P`, or `ARI - SF` when the time does not fit). A score too wide for its space is squeezed (spaces dropped, then the narrower TomThumb font).
+- **When a player gains points** (any amount), or loses at least `EVENT_MIN_PTS` (1.0) in one fetch, the scoreboard gives way to full screens, then returns:
+  1. **Celebration** (gains only, `src/celebrate.cpp`), picked by the kind of play:
+     - **Rush** (3 s): the ball carrier sprints down a scrolling field, hops a diving defender, `RUSH!`
+     - **Pass / Catch** (3 s): a spiral from the quarterback to the receiver, sparks at the catch, `COMPLETE!` or `CAUGHT IT!`
+     - **Defense** (3 s): a hit with a shockwave and screen shake, the ball pops loose, then a flashing D and fence
+     - **Kick** (3 s): behind the kicker, the ball flies through the uprights, `GOOD!` with confetti
+     - **Touchdowns** (3.5 s), one scene per kind:
+       - rushing: sprint, the end zone scrolls in, a dive over the goal line, a spike, `TOUCHDOWN!` scrolling across the sky
+       - passing: the quarterback's bomb leaves the top of the screen and drops into the end zone; its path stays as a rainbow arc, `DIME!`
+       - receiving: toe-tap catch in the end zone, a leap into the stands, the crowd goes wild, `SIX!`
+       - defensive: the defender jumps a throw and returns it the length of the field, `TO THE` `HOUSE!`
+     - **Other** (3 s): fireworks
   2. **Update screen** (3.5 s): the player's name in large letters, what happened, the points gained (green) or lost (red), and the player's new total.
-  - **What happened** comes from comparing the player's stats with the previous fetch. In order of priority: a touchdown (`RUSHING TD`, `RECEIVING TD`, `TD PASS`, `DEFENSIVE TD`), a field goal with its distance, an interception, a fumble recovery or a sack for a defense, `INTERCEPTED` or `FUMBLE LOST`, then yards (`RUN FOR 30 YDS`, `CATCH FOR 12 YDS`, `PASS FOR 45 YDS`), then `EXTRA POINT`. Several plays can happen between two fetches (30 s); yards are then the total.
+  - **What happened** comes from comparing the player's stats with the previous fetch. In order of priority: a touchdown (`RUSHING TD`, `RECEIVING TD`, `TD PASS`, `DEFENSIVE TD`), a field goal with its distance, an interception, a fumble recovery or a sack for a defense, `INTERCEPTED` or `FUMBLE LOST`, then yards (`RUSH FOR 30 YDS`, `CATCH FOR 12 YDS`, `PASS FOR 45 YDS`), then `EXTRA POINT`. Several plays can happen between two fetches (30 s); yards are then the total.
   - Several changes in one fetch are shown one after another, up to 6 queued.
-  - The **Test celebration** button on the web page plays both screens for the first player, with a made-up 30-yard run.
+  - The **Test celebration** buttons on the web page (Rush, Catch, Pass, Defense, Kick, the four touchdowns, Other) play that celebration and the update screen for the first player.
 - **Points:**
   - `-` in grey: no stats this week yet (game not started, or bye)
   - green for 8 s after a change
@@ -152,7 +163,7 @@ Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app sl
 |---|---|---|
 | GET | `/` | the picker page |
 | GET | `/api/config` | `{scoring, brightness, players:[{id,label,pos,team,pts,state,game}], season, season_type, week, status, last_ok_s}` |
-| POST | `/api/test` | plays the celebration and update screens for the first player (made-up event) |
+| POST | `/api/test?kind=N` | plays a celebration and the update screen for the first player (made-up event). `N` 0–9: rush, catch, pass, defense, kick, rushing TD, receiving TD, passing TD, defensive TD, other; without `N`, the next one each time |
 | POST | `/api/config` | `{scoring, brightness, players:[{id,label,pos,team}]}`, at most 9 players; replies like GET |
 
 `state`: 0 not fetched yet, 1 no stats this week, 2 points valid. `status`: the last HTTP code, or −1 begin failed, −2 JSON parse error, −3 unexpected state reply.
@@ -178,7 +189,7 @@ Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app sl
 | `src/abbrev.h` | shortens labels from the middle to fit the row |
 | `src/startup.cpp`, `src/startup.h` | startup animation |
 | `src/fonts/` | X11 4×6 (rows) and 5×7 (update screen) fonts as Adafruit GFX headers, generated by `tools/bdf2gfx.py` from `tools/fonts/*.bdf` |
-| `src/celebrate.cpp`, `src/celebrate.h` | fireworks celebration |
+| `src/celebrate.cpp`, `src/celebrate.h` | celebrations per kind of play |
 | `tools/render_preview.py` | redraws `docs/panel-preview.png` and `docs/update-preview.png` |
 | `src/ESP32-HUB75-*`, `src/platforms/` | HUB75 panel driver vendored from Waveshare's Arduino examples (copied from infopanel64) |
 | `src/secrets.example.h` | template for `src/secrets.h` |

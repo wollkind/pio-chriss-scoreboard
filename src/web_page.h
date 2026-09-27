@@ -51,7 +51,19 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   </label>
   <label>Brightness <input id="brightness" type="range" min="5" max="255"></label>
   <button class="primary" id="save">Save to panel</button>
-  <button id="test" title="Play the celebration and update screens on the panel">Test celebration</button>
+</div>
+<div class="row" id="tests" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+  <span class="dim" style="align-self:center">Test celebration:</span>
+  <button data-kind="0">Rush</button>
+  <button data-kind="1">Catch</button>
+  <button data-kind="2">Pass</button>
+  <button data-kind="3">Defense</button>
+  <button data-kind="4">Kick</button>
+  <button data-kind="5">Rushing TD</button>
+  <button data-kind="6">Receiving TD</button>
+  <button data-kind="7">Passing TD</button>
+  <button data-kind="8">Defensive TD</button>
+  <button data-kind="9">Other</button>
 </div>
 <div id="msg" class="dim"></div>
 
@@ -202,12 +214,12 @@ $('save').onclick = async () => {
 };
 $('scoring').onchange = setDirty;
 $('brightness').onchange = setDirty;
-$('test').onclick = async () => {
+document.querySelectorAll('#tests button').forEach(b => b.onclick = async () => {
   try {
-    const r = await fetch('/api/test', { method: 'POST' });
-    $('msg').textContent = r.ok ? 'Test celebration queued: watch the panel.' : 'Test failed.';
+    const r = await fetch('/api/test?kind=' + b.dataset.kind, { method: 'POST' });
+    $('msg').textContent = r.ok ? b.textContent + ' celebration queued: watch the panel.' : 'Test failed.';
   } catch (e) { $('msg').textContent = 'Panel not reachable.'; }
-};
+});
 $('search').oninput = renderResults;
 
 (async () => {

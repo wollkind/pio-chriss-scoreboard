@@ -38,7 +38,7 @@ User-facing description, data format and web API: `README.md`. This file holds t
   - points right-aligned to the ink edge at x 63
 - **Total line (`drawTotalLine()`):**
   - total of `PTS_OK` players right-aligned, gold
-  - left: `orderedGames()` (live, final, pre), rotated every `SCORES_ROTATE_MS`. `drawGameScore()` picks the first form that fits before the total: `AWY 17 HOM 10` (4×6), `AWY17 HOM10` (4×6), then the same two in TomThumb. Upcoming games use `AWY@HOM 1:00P`, then `AWY@HOM`.
+  - left: `orderedGames()` (live, final, pre), rotated every `SCORES_ROTATE_MS`. `drawGameScore()` picks the first form that fits before the total: `AWY 17 HOM 10` (4×6), `AWY17 HOM10` (4×6), then the same two in TomThumb. Upcoming games use `AWY - HOM 1:00P`, then `AWY - HOM`.
 - **Points format:** `formatPoints()` switches to whole numbers at ≥ 99.95 or ≤ −9.95, so values stay within 4 characters.
 - **Order:** the roster order from the web page (↑/↓). `SORT_BY_POINTS 1` sorts by points instead.
 - **Fonts:** `tools/bdf2gfx.py` converts `tools/fonts/4x6.bdf` and `5x7.bdf` (public domain, from olikraus/u8g2 at d6c8499) into `src/fonts/*.h`.
@@ -46,12 +46,20 @@ User-facing description, data format and web API: `README.md`. This file holds t
 
 ## Events (celebration and update screens)
 
-- **Detection (`fetchTask`):** when both the old and new state are `PTS_OK` and the points moved by at least `EVENT_MIN_PTS` (1.0), an `Event` is queued (`queueEvent()`, ring buffer of `MAX_EVENTS` 6 under `g_lock`; extras are dropped).
-- **Description (`describeChange()`):** from the differences of the `STAT_KEYS` fields kept per player. Priority: TDs, field goal (distance = `fgm_yds` delta / `fgm` delta), defense INT / fumble recovery / sack, `INTERCEPTED`, `FUMBLE LOST`, the largest yardage (`RUN FOR`, `CATCH FOR`, `PASS FOR`), `EXTRA POINT`, else `POINTS UP` / `POINTS DOWN`.
+- **Detection (`fetchTask`):** when both the old and new state are `PTS_OK` and the points went up by any amount, or down by at least `EVENT_MIN_PTS` (1.0), an `Event` is queued (`queueEvent()`, ring buffer of `MAX_EVENTS` 6 under `g_lock`; extras are dropped).
+- **Description (`describeChange()`):** from the differences of the `STAT_KEYS` fields kept per player. Priority: TDs, field goal (distance = `fgm_yds` delta / `fgm` delta), defense INT / fumble recovery / sack, `INTERCEPTED`, `FUMBLE LOST`, the largest yardage (`RUSH FOR`, `CATCH FOR`, `PASS FOR`), `EXTRA POINT`, else `POINTS UP` / `POINTS DOWN`.
   - Stat names seen in real week 2 replies: `pass_yd`, `pass_td`, `rush_yd`, `rec`, `rec_yd`, `rec_td`, `fgm`, `fgm_yds`, `xpm`, `sack`, `td` (DEF).
   - Not seen, unverified: `pass_int`, `rush_td`, `fum_lost`, `int`, `fum_rec`.
+- **Play kind:** `describeChange()` also sets `Event.play` (`Play` in `celebrate.h`: RUSH, PASS, CATCH, DEFENSE, KICK, OTHER) and `Event.touchdown`. TD → its kind + touchdown; FG and XP → KICK; INT, fumble recovery, sack → DEFENSE; yardage → RUSH / CATCH / PASS; `INTERCEPTED`, `FUMBLE LOST`, `POINTS UP/DOWN` → OTHER.
+- **Celebrations (`celebrate.cpp`):** rush (scrolling side-view field, runner hops a diving defender, `RUSH!`), pass/catch (spiral QB→receiver, sparks, `COMPLETE!` / `CAUGHT IT!`), defense (hit, shake, loose ball, D + fence), kick (behind the kicker, ball through the uprights, `GOOD!`), other (fireworks). `celebrationMs()`: `CELEBRATE_MS` 3000, `TOUCHDOWN_MS` 3500.
+- **Touchdowns**, one scene per kind, on `drawFieldCam()` (side-view field with a camera, a theme-striped end zone, goal line and post):
+  - `drawRushTD()`: sprint, end zone scrolls in, dive over the goal line, spike, `TOUCHDOWN!` marquee
+  - `drawPassTD()`: the player is the QB; the bomb leaves the top of the screen, its path turns into a rainbow arc, `DIME!`
+  - `drawCatchTD()`: toe-tap catch, leap into the stands (`drawStands()`), `SIX!`
+  - `drawDefTD()`: jumped route, return to the end zone on the left, `TO THE` `HOUSE!`
+  - `drawTouchdown()` (`TOUCH` `DOWN!` over fireworks) remains for a TD of any other kind (none is produced today).
 - **Screens (`drawEventScreens()`, loop):**
-  - Gains: `drawCelebration()` for `CELEBRATE_MS` 2000, then `drawUpdate()` for `UPDATE_MS` 3500.
+  - Gains: `drawCelebration()` for `celebrationMs()`, then `drawUpdate()` for `UPDATE_MS` 3500.
   - Losses: `drawUpdate()` only.
   - Then the next queued event, or the scoreboard.
 - **`drawUpdate()` layout:**
@@ -60,12 +68,14 @@ User-facing description, data format and web API: `README.md`. This file holds t
   - action, 5×7, split at the space nearest the middle when too wide
   - delta, size 2, green or red
   - `NOW 25.1` in 4×6
-- **Test:** `POST /api/test` (web page button) queues a made-up +3.0 `RUN FOR 30 YDS` for the first player.
+- **Test:** `POST /api/test?kind=N` (one web page button per celebration) queues a made-up event from `SAMPLES` in `handleTest()` for the first player.
 
 ## Games (ESPN)
 
-- `fetchScoreboard()` streams the reply through an ArduinoJson filter straight off the connection (`http.getStream()`, HTTP/1.0 so there is no chunk framing).
-- Games are stored in `g_games`. The panel uses them only for possession (`teamPossession()`). `scoreLine()` builds the game text for `/api/config` (`game` field), which the web page shows.
+- `fetchScoreboard()` reads the whole reply (~200 KB, no Content-Length, HTTP/1.0) into a 512 KB PSRAM buffer, then parses it through an ArduinoJson filter (`getJson(..., large = true)`).
+  - v0.2–v0.5 parsed straight off the TLS stream; on the board this failed with −2 on every round (seen 2026-09-27 on v0.5: `status` −2, `last_ok_s` −1, no games). Buffered, it parses: 16 games, possession correct.
+  - `/api/config` reports `espn_status`, `json_err` (last parse error text) and `games`.
+- Games are stored in `g_games`. The panel uses them for possession (`teamPossession()`) and the rotating scores on the total line (`orderedGames()`). `scoreLine()` builds the game text for `/api/config` (`game` field), which the web page shows.
 - Possession: `situation.possession` is an ESPN team ID (string), matched to the competitor's `team.id`. Verified against live games on 2026-09-27: the parse, run on the computer with the same filter, gave the right team with the ball and red zone for all 9 live games. `STATUS_HALFTIME` is still unseen.
 - Nesting: the reply is 15 levels deep. ArduinoJson's default limit (10) applies to filtered-out parts too, so `getJson()` passes `NestingLimit(JSON_NESTING_LIMIT)` (32). Without it, v0.2 and v0.3 failed every scoreboard fetch with −2.
 - `WSH` is converted to Sleeper's `WAS`.
@@ -94,7 +104,8 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 | Sleeper endpoints with curl, 2026-09-27 (week 3) | state, player lists, per-player stats, `null` for a player with no game yet, DEF stats by team ID. CORS header present |
 | Panel layout | rendered offline from `glcdfont.c` (`docs/panel-preview.png`); fits 64 px |
 | On hardware (v0.1) | works (owner, 2026-09-27) |
-| On hardware (v0.2 to v0.5) | **not yet flashed**: layout, fonts, possession football, total line, celebration and update screens, startup animation, OTA speed |
+| On hardware (v0.5) | running (owner, 2026-09-27); player points work; NFL scores and possession were missing (ESPN parse −2) |
+| On hardware (v0.6), OTA 2026-09-27 | ESPN fetch 200, 16 games, possession shown in `/api/config`. Celebrations **not yet watched** |
 | Live-game update latency | **not measured** |
 
 ## History
@@ -113,3 +124,5 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.4.1:** panel order is the order set on the web page (↑ and ↓ buttons) instead of by points.
 - **v0.4.2:** OTA is a plain `[env:esp32s3-ota]` again (`upload_protocol = espota`). The custom `ota` target from v0.2 (`scripts/ota.py`) was removed: the owner could not get it to run.
 - **v0.5:** 5 px font, 10 lines (9 players + total line with rotating NFL scores). Celebration and update screens on points changes. Test button. Name-size setting removed.
+- **v0.6:** fix: ESPN reply buffered in PSRAM before parsing (stream parse failed on the board, so no scores or possession). Celebration per kind of play, separate touchdown screen (3–3.5 s). Every gain celebrates. One test button per celebration.
+- **v0.6.1:** a touchdown scene per kind (rush, pass, catch, defense). "Run" renamed "Rush". Upcoming games `AWY - HOM` instead of `AWY@HOM`.

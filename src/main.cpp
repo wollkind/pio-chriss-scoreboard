@@ -6,9 +6,10 @@
 // ball, and this week's fantasy points. Under a divider, the total line: rotating NFL scores on the
 // left, the total of all players' points on the right.
 //
-// When a player's points change by EVENT_MIN_PTS or more, the scoreboard gives way to full-screen
-// screens, then returns: a gain plays a 2 s celebration (celebrate.cpp) and then the update screen
-// ("GIBBS / RUN FOR 30 YDS / +3.0"); a loss shows only the update screen, in red. The play is
+// When a player gains points, or loses EVENT_MIN_PTS or more, the scoreboard gives way to
+// full-screen screens, then returns: a gain plays a celebration for the kind of play (run, pass,
+// catch, defense, kick; touchdowns get their own, celebrate.cpp) and then the update screen
+// ("GIBBS / RUSH FOR 30 YDS / +3.0"); a loss shows only the update screen, in red. The play is
 // worked out from the change in the player's stats since the previous fetch.
 //
 // Players are picked on a web page served by the board (http://scoreboard.local/). The page's
@@ -75,7 +76,7 @@
 #define SORT_BY_POINTS     0       // 0: the order set on the web page (arrows); 1: highest points first
 #define FLASH_MS           8000    // points that changed are drawn green this long
 #define STARTUP_ANIMATION  1       // 0: skip the startup animation
-#define EVENT_MIN_PTS      1.0f    // a points change at least this big (up or down) gets the screens
+#define EVENT_MIN_PTS      1.0f    // a points loss at least this big gets the update screen; any gain does
 #define UPDATE_MS          3500    // how long the update screen shows
 #define MAX_EVENTS         6       // queued update screens; later ones are dropped when full
 #define HOSTNAME           "scoreboard"
@@ -120,9 +121,11 @@ struct Player {
 struct Event {
   char label[16];
   char pos[4];
-  char action[24];   // "RUN FOR 30 YDS", "RECEIVING TD", ...
+  char action[24];   // "RUSH FOR 30 YDS", "RECEIVING TD", ...
   float delta;       // points gained (negative: lost)
   float pts;         // the player's points afterwards
+  Play play;         // picks the celebration
+  bool touchdown;
 };
 
 enum GameState : uint8_t { GAME_PRE, GAME_LIVE, GAME_FINAL };
@@ -163,6 +166,8 @@ static int g_game_count = 0;
 static bool g_have_games = false;
 static uint32_t g_last_ok_ms = 0;             // end of the last round with no errors
 static int g_status = 0;                      // last HTTP code, or negative for local errors
+static int g_espn_status = 0;                 // last ESPN scoreboard result
+static char g_json_err[24] = "";              // last JSON parse error
 
 static TaskHandle_t g_fetch_task = nullptr;
 static uint32_t g_startup_ms = 0;
@@ -400,16 +405,16 @@ static void loadConfig()
 
 // ---- Fetching --------------------------------------------------------------------------
 
-// GET url into doc (optionally through a filter). With `stream`, the body is parsed straight off
-// the connection instead of being buffered first (for the large ESPN reply). Returns the HTTP code,
-// or -1 begin failed, -2 JSON parse error.
-static int getJson(const char *url, JsonDocument &doc, JsonDocument *filter, bool stream = false)
+// GET url into doc (optionally through a filter). With `large`, the body is read into a PSRAM
+// buffer first (for the ~200 KB ESPN reply). Returns the HTTP code, or -1 begin failed, -2 JSON
+// parse error, -4 out of memory, -5 body cut short. The parse error text goes to g_json_err.
+static int getJson(const char *url, JsonDocument &doc, JsonDocument *filter, bool large = false)
 {
   WiFiClientSecure client;
   client.setInsecure();   // public read-only data; skips shipping a CA bundle
   HTTPClient http;
   // HTTP/1.0: plain body and the server closes (see the infopanel64 v4.1 note on chunked replies
-  // timing out in HTTPClient). It also makes the stream parse below see only the JSON.
+  // timing out in HTTPClient).
   http.useHTTP10(true);
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
   if (!http.begin(client, url)) {
@@ -426,17 +431,53 @@ static int getJson(const char *url, JsonDocument &doc, JsonDocument *filter, boo
   // parts a filter skips, so without a higher limit the parse fails with TooDeep.
   const auto nesting = DeserializationOption::NestingLimit(JSON_NESTING_LIMIT);
   DeserializationError err;
-  if (stream) {
-    err = filter ? deserializeJson(doc, http.getStream(), DeserializationOption::Filter(*filter), nesting)
-                 : deserializeJson(doc, http.getStream(), nesting);
+  if (large) {
+    // Parsing straight off the TLS stream failed on the board with -2 every round (v0.5,
+    // 2026-09-27), so the whole body is read first. ESPN sends no Content-Length: read until the
+    // server closes and nothing is left.
+    size_t cap = 512 * 1024, len = 0;
+    char *buf = static_cast<char *>(ps_malloc(cap));
+    if (!buf) {
+      http.end();
+      return -4;
+    }
+    WiFiClient *s = http.getStreamPtr();
+    uint32_t last = millis();
+    while (millis() - last < HTTP_TIMEOUT_MS) {
+      const int avail = s->available();
+      if (avail > 0) {
+        if (len + avail >= cap) {
+          free(buf);
+          http.end();
+          return -4;
+        }
+        len += s->read(reinterpret_cast<uint8_t *>(buf) + len, avail);
+        last = millis();
+      } else if (!s->connected()) {
+        break;
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(5));
+      }
+    }
     http.end();
+    if (len == 0) {
+      free(buf);
+      return -5;
+    }
+    err = filter ? deserializeJson(doc, buf, len, DeserializationOption::Filter(*filter), nesting)
+                 : deserializeJson(doc, buf, len, nesting);
+    free(buf);
   } else {
     const String body = http.getString();
     http.end();
     err = filter ? deserializeJson(doc, body, DeserializationOption::Filter(*filter), nesting)
                  : deserializeJson(doc, body, nesting);
   }
-  return err ? -2 : code;
+  if (err) {
+    copyStr(g_json_err, sizeof(g_json_err), err.c_str());
+    return -2;
+  }
+  return code;
 }
 
 // /v1/state/nfl: {"week":3,"season":"2026","season_type":"regular","display_week":3,...}
@@ -542,6 +583,7 @@ static bool fetchScoreboard()
   JsonDocument doc;
   const int code = getJson("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
                            doc, &filter, true);
+  g_espn_status = code;
   if (code != HTTP_CODE_OK) {
     g_status = code;
     return false;
@@ -590,8 +632,12 @@ static bool fetchScoreboard()
 
 // What happened between two stat lines, most notable first. Several plays can fall between two
 // fetches; yardage is then the total of all of them.
-static void describeChange(const float *before, const float *after, float delta, char *out, size_t size)
+static void describeChange(const float *before, const float *after, float delta, Event &e)
 {
+  char *out = e.action;
+  const size_t size = sizeof(e.action);
+  e.play = PLAY_OTHER;
+  e.touchdown = false;
   float d[ST_COUNT];
   for (int k = 0; k < ST_COUNT; ++k) {
     d[k] = after[k] - before[k];
@@ -601,12 +647,20 @@ static void describeChange(const float *before, const float *after, float delta,
   const int pass = static_cast<int>(lroundf(d[ST_PASS_YD]));
   if (d[ST_DEF_TD] > 0) {
     snprintf(out, size, "DEFENSIVE TD");
+    e.play = PLAY_DEFENSE;
+    e.touchdown = true;
   } else if (d[ST_RUSH_TD] > 0) {
     snprintf(out, size, "RUSHING TD");
+    e.play = PLAY_RUSH;
+    e.touchdown = true;
   } else if (d[ST_REC_TD] > 0) {
     snprintf(out, size, "RECEIVING TD");
+    e.play = PLAY_CATCH;
+    e.touchdown = true;
   } else if (d[ST_PASS_TD] > 0) {
     snprintf(out, size, "TD PASS");
+    e.play = PLAY_PASS;
+    e.touchdown = true;
   } else if (d[ST_FGM] > 0) {
     const int yds = static_cast<int>(lroundf(d[ST_FGM_YDS] / d[ST_FGM]));
     if (yds > 0) {
@@ -614,24 +668,32 @@ static void describeChange(const float *before, const float *after, float delta,
     } else {
       snprintf(out, size, "FIELD GOAL");
     }
+    e.play = PLAY_KICK;
   } else if (d[ST_INT] > 0) {
     snprintf(out, size, "INTERCEPTION");
+    e.play = PLAY_DEFENSE;
   } else if (d[ST_FUM_REC] > 0) {
     snprintf(out, size, "FUMBLE RECOVERY");
+    e.play = PLAY_DEFENSE;
   } else if (d[ST_SACK] > 0) {
     snprintf(out, size, "SACK");
+    e.play = PLAY_DEFENSE;
   } else if (d[ST_PASS_INT] > 0) {
     snprintf(out, size, "INTERCEPTED");
   } else if (d[ST_FUM_LOST] > 0) {
     snprintf(out, size, "FUMBLE LOST");
   } else if (rush != 0 && abs(rush) >= abs(rec) && abs(rush) >= abs(pass)) {
-    snprintf(out, size, "RUN FOR %d YDS", rush);
+    snprintf(out, size, "RUSH FOR %d YDS", rush);
+    e.play = PLAY_RUSH;
   } else if (rec != 0 && abs(rec) >= abs(pass)) {
     snprintf(out, size, "CATCH FOR %d YDS", rec);
+    e.play = PLAY_CATCH;
   } else if (pass != 0) {
     snprintf(out, size, "PASS FOR %d YDS", pass);
+    e.play = PLAY_PASS;
   } else if (d[ST_XPM] > 0) {
     snprintf(out, size, "EXTRA POINT");
+    e.play = PLAY_KICK;
   } else {
     snprintf(out, size, delta > 0 ? "POINTS UP" : "POINTS DOWN");
   }
@@ -695,13 +757,14 @@ static void fetchTask(void *)
         Player &p = g_players[i];
         if (p.state == PTS_OK && state == PTS_OK && fabsf(p.pts - pts) > 0.001f) {
           p.changed_ms = millis();
-          if (fabsf(pts - p.pts) >= EVENT_MIN_PTS - 0.001f) {
+          // Every gain celebrates; only losses of EVENT_MIN_PTS or more interrupt the scoreboard.
+          if (pts - p.pts > 0.001f || p.pts - pts >= EVENT_MIN_PTS - 0.001f) {
             Event e = {};
             copyStr(e.label, sizeof(e.label), p.label);
             copyStr(e.pos, sizeof(e.pos), p.pos);
             e.delta = pts - p.pts;
             e.pts = pts;
-            describeChange(p.stats, stats, e.delta, e.action, sizeof(e.action));
+            describeChange(p.stats, stats, e.delta, e);
             queueEvent(e);
           }
         }
@@ -737,6 +800,9 @@ static void handleGetConfig()
   doc["season_type"] = g_season_type;
   doc["week"] = g_week;
   doc["status"] = g_status;
+  doc["espn_status"] = g_espn_status;
+  doc["json_err"] = g_json_err;
+  doc["games"] = g_game_count;
   doc["last_ok_s"] = g_last_ok_ms ? static_cast<int>((millis() - g_last_ok_ms) / 1000) : -1;
   xSemaphoreGive(g_lock);
   String out;
@@ -765,22 +831,56 @@ static void handlePostConfig()
   handleGetConfig();
 }
 
-// POST /api/test: queue a made-up event for the first player, to see the screens.
+// POST /api/test?kind=N: queue a made-up event for the first player, to see the screens. N indexes
+// SAMPLES (the web page has one button each); without it, each press shows the next one.
 static void handleTest()
 {
+  struct Sample {
+    const char *action;
+    float delta;
+    Play play;
+    bool touchdown;
+  };
+  static const Sample SAMPLES[] = {
+      {"RUSH FOR 30 YDS", 3.0f, PLAY_RUSH, false},
+      {"CATCH FOR 25 YDS", 3.5f, PLAY_CATCH, false},
+      {"PASS FOR 40 YDS", 1.6f, PLAY_PASS, false},
+      {"SACK", 1.0f, PLAY_DEFENSE, false},
+      {"45 YD FIELD GOAL", 4.0f, PLAY_KICK, false},
+      {"RUSHING TD", 6.0f, PLAY_RUSH, true},
+      {"RECEIVING TD", 6.0f, PLAY_CATCH, true},
+      {"TD PASS", 4.0f, PLAY_PASS, true},
+      {"DEFENSIVE TD", 6.0f, PLAY_DEFENSE, true},
+      {"POINTS UP", 1.0f, PLAY_OTHER, false},
+  };
+  constexpr int COUNT = sizeof(SAMPLES) / sizeof(SAMPLES[0]);
+  static int next = 0;
+  if (server.hasArg("kind")) {
+    const int kind = server.arg("kind").toInt();
+    if (kind < 0 || kind >= COUNT) {
+      server.send(400, "text/plain", "kind out of range");
+      return;
+    }
+    next = kind;
+  }
+  const Sample &sample = SAMPLES[next];
+  next = (next + 1) % COUNT;
+
   Event e = {};
   xSemaphoreTake(g_lock, portMAX_DELAY);
   if (g_count > 0) {
     copyStr(e.label, sizeof(e.label), g_players[0].label);
     copyStr(e.pos, sizeof(e.pos), g_players[0].pos);
-    e.pts = (g_players[0].state == PTS_OK ? g_players[0].pts : 0.0f) + 3.0f;
+    e.pts = (g_players[0].state == PTS_OK ? g_players[0].pts : 0.0f) + sample.delta;
   } else {
     copyStr(e.label, sizeof(e.label), "Test");
     copyStr(e.pos, sizeof(e.pos), "RB");
-    e.pts = 3.0f;
+    e.pts = sample.delta;
   }
-  copyStr(e.action, sizeof(e.action), "RUN FOR 30 YDS");
-  e.delta = 3.0f;
+  copyStr(e.action, sizeof(e.action), sample.action);
+  e.delta = sample.delta;
+  e.play = sample.play;
+  e.touchdown = sample.touchdown;
   queueEvent(e);
   xSemaphoreGive(g_lock);
   server.send(200, "text/plain", "queued");
@@ -922,8 +1022,8 @@ static void drawGameScore(const Game &game, int max_w, int base)
 {
   char forms[4][24];
   if (game.state == GAME_PRE) {
-    snprintf(forms[0], sizeof(forms[0]), "%s@%s %s", game.away, game.home, game.kickoff);
-    snprintf(forms[1], sizeof(forms[1]), "%s@%s", game.away, game.home);
+    snprintf(forms[0], sizeof(forms[0]), "%s - %s %s", game.away, game.home, game.kickoff);
+    snprintf(forms[1], sizeof(forms[1]), "%s - %s", game.away, game.home);
     copyStr(forms[2], sizeof(forms[2]), forms[0]);
     copyStr(forms[3], sizeof(forms[3]), forms[1]);
   } else {
@@ -1137,9 +1237,10 @@ static bool drawEventScreens(uint32_t now)
     }
   }
   const uint32_t t = now - g_show_ms;
-  const uint32_t celebrate = g_current.delta > 0 ? CELEBRATE_MS : 0;   // losses skip the party
+  // Losses skip the party.
+  const uint32_t celebrate = g_current.delta > 0 ? celebrationMs(g_current.touchdown) : 0;
   if (t < celebrate) {
-    drawCelebration(*canvas, t, g_event_seq, positionColor(g_current.pos));
+    drawCelebration(*canvas, t, g_event_seq, positionColor(g_current.pos), g_current.play, g_current.touchdown);
     return true;
   }
   if (t < celebrate + UPDATE_MS) {

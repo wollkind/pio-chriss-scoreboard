@@ -29,7 +29,7 @@ User-facing description, data format and web API: `README.md`. This file holds t
 
 - **Blocks:** one per player. A name row of `RowFont::height`, then a `SCORE_H` 5 px score line in TomThumb.
   - x 0–1: position bar
-  - label from x 3, cut character by character until its ink ends `LABEL_GAP` px before the points
+  - label from x 3, shortened by `abbreviate()` (`src/abbrev.h`) until its ink ends `LABEL_GAP` px before the points. It removes one character at a time, re-measuring each time, in this order: `.`/`'`/`-`, the second letter of doubled consonants, lowercase vowels (rightmost first, never a word's first letter or the name's last), spaces, lowercase consonants (rightmost first), and then truncates.
   - points right-aligned to the ink edge at x 63
   - score line: ball marker at x 3–6 (column always reserved), text from x 8. The longest line, `17-10 Q3 4:12`, is 13 × 4 px and ends at x 59.
 - **Name fonts (`ROW_FONTS`, index `g_font` from the web page):**
@@ -81,7 +81,8 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.1:** first pass. Player picker page, per-player weekly points, sorted rows, change flash, OTA. Tested on hardware: works.
 - **v0.2:**
   - 9 players
-  - Name size setting (Large, Medium, Narrow), with labels cut to the width that fits
+  - Name size setting (Large, Medium, Narrow), with labels fitted to the width
+- **v0.3:** labels too wide for the row are shortened from the middle (`abbrev.h`) instead of cut off at the end
   - Game score line with a possession marker, from ESPN
   - Pages when the players don't fit on one screen
   - Startup animation

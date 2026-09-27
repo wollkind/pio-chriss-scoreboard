@@ -14,7 +14,7 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 - **Players:** up to 9, sorted by points (highest first). Players with no stats yet go last.
 - **Each player** is a block:
   - a position bar on the left: QB red, RB green, WR blue, TE orange, K purple, DEF grey
-  - the label (editable on the web page), cut to whatever fits
+  - the label (editable on the web page). A label too wide for the row is shortened from the middle, so it stays readable: doubled letters, then vowels, then other letters go, keeping the first and last letters (`Washington` → `Washngtn` → `Wshngtn`, `Hockenson` → `Hocknsn`). See `src/abbrev.h`.
   - this week's points, right-aligned
   - underneath, in a tiny font, the player's game:
 

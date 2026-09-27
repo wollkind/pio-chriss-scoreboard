@@ -122,7 +122,7 @@ function renderRoster() {
   ul.replaceChildren();
   if (!roster.length) ul.append(el('li', { className: 'dim', textContent: 'No players yet.' }));
   roster.forEach((p, i) => {
-    const label = el('input', { className: 'label', value: p.label, maxLength: 15, title: 'Name on the panel; letters that do not fit are cut off' });
+    const label = el('input', { className: 'label', value: p.label, maxLength: 15, title: 'Name on the panel; if too long, letters are left out from the middle (mostly vowels)' });
     label.oninput = () => { p.label = label.value; setDirty(); };
     const up = el('button', { textContent: '↑', title: 'Move up', disabled: i === 0 });
     up.onclick = () => { [roster[i - 1], roster[i]] = [roster[i], roster[i - 1]]; setDirty(); renderRoster(); };

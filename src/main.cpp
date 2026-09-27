@@ -35,6 +35,7 @@
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <algorithm>
 #include <cmath>
+#include "abbrev.h"
 #include "fonts/Font5x7.h"
 #include "fonts/FontSqueezed7.h"
 #include "startup.h"
@@ -746,14 +747,11 @@ static void drawPlayer(const Player &p, int y, const RowFont &rf, bool stale, ui
   canvas->setCursor(pts_x, y + rf.baseline);
   canvas->print(pts);
 
-  // Label: as many characters as fit before the points.
+  // Label: shortened from the middle until it fits before the points (abbrev.h).
   canvas->setFont(rf.label);
   char label[sizeof(Player::label)];
   copyStr(label, sizeof(label), p.label);
-  const int max_w = pts_x - LABEL_GAP - LABEL_X;
-  for (size_t n = strlen(label); n > 0 && inkWidth(label, rf.label) > max_w; --n) {
-    label[n - 1] = '\0';
-  }
+  abbreviate(label, pts_x - LABEL_GAP - LABEL_X, [&rf](const char *text) { return inkWidth(text, rf.label); });
   canvas->setTextColor(COLOR_TEXT);
   canvas->setCursor(LABEL_X, y + rf.baseline);
   canvas->print(label);

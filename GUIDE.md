@@ -52,7 +52,7 @@ To add a team defense, search for the team name, for example `green bay`, and pi
 The panel is small, so each player is shown with a short name. The page fills in the last name for you.
 
 - To change a short name, tap the box next to the player and type a new one, for example `Patty` instead of `Mahomes`.
-- Letters that don't fit are cut off on the panel.
+- If a name is too long, the panel leaves out letters from the middle, mostly vowels, so it stays readable. For example `Washington` becomes `Wshngtn`. For a different short form, type your own.
 - **Name size** changes how many letters fit: **Large** about 6, **Medium** about 7 or 8, **Narrow** about 8 or 9. Try one, tap **Save to panel**, and look at the panel.
 
 ## Step 4: Choose the scoring

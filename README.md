@@ -14,10 +14,12 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 |---|---|---|
 | v0.1 | picker page, weekly points, 8 rows | **works** (tested by the owner) |
 | v0.2 | 9 players, pages, game score lines with possession, name sizes, startup animation, faster OTA and `ota` target | not yet flashed |
-| v0.3 (current `main`) | long labels shortened from the middle | not yet flashed |
+| v0.3 | long labels shortened from the middle | not yet flashed |
+| v0.3.1 (current `main`) | fix: ESPN scoreboard parse failed (JSON nesting limit) | not yet flashed |
 
 Open points:
-- **Possession marker:** ESPN's `situation` fields were not in the reply when this was written (no game live). Their names are from the endpoint's commonly published format, not from a live reply.
+- **Possession marker:** checked against live games on 2026-09-27 at 17:20 UTC; the fields are as expected (see the ESPN section). v0.2 and v0.3 had a bug: ArduinoJson's default nesting limit rejected ESPN's reply, so every scoreboard fetch failed. It is fixed on `main` (v0.3.1).
+- **Halftime:** the status name `STATUS_HALFTIME` has not been seen in a live reply yet.
 - **OTA flashing speed:** flashing firmware over WiFi was very slow on v0.1. The fix (WiFi modem sleep off) is part of the firmware on the board, so it only helps once v0.2 or later is running: the OTA flash that installs v0.2 over v0.1 is still slow (or flash that one over USB). The speed of later OTA flashes has not been measured.
 - **Data delay:** how soon points and scores on the panel change after a play has not been measured.
 
@@ -121,7 +123,14 @@ The stats endpoint is the one the Sleeper app itself uses. It is not in Sleeper'
 
 **Game scores: ESPN.** `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard` returns every game of the current week in one reply: teams, scores, status, quarter and clock. During a live game it also has `situation.possession` (the ID of the team with the ball) and `situation.isRedZone`. The endpoint is public, needs no key, and is not officially documented by ESPN.
 - **Team codes:** ESPN's match Sleeper's except Washington (`WSH` at ESPN, `WAS` at Sleeper). The firmware converts it.
-- **Unverified:** the `situation` fields were not present in the reply checked on 2026-09-27, because no game was live at the time. Their names follow the commonly published format of this endpoint.
+- **Checked live (2026-09-27, 1 PM games, 1st quarter):**
+  - `situation.possession` is a string team ID (`"24"`) matching `competitors[].team.id`
+  - `situation.isRedZone` is a boolean, `true` at "1st & Goal at PIT 3"
+  - `score` is a string (`"7"`)
+  - `status.type.name` is `STATUS_IN_PROGRESS`, `displayClock` is `"7:27"` or `"10:49"`
+  - The firmware's filter and parsing, run on the computer against that reply, gave the right score, quarter, clock, team with the ball and red zone for all 9 live games.
+- **Nesting depth:** the reply nests 15 levels deep, beyond ArduinoJson's default limit of 10, which applies even to the parts the filter skips. The firmware raises it to 32 (`JSON_NESTING_LIMIT`).
+- **Still unseen:** the halftime status name (`STATUS_HALFTIME`).
 
 **Player IDs.** Sleeper's `player_id` is a string. It is digits for players (`"4046"` is Patrick Mahomes) and the team abbreviation for team defenses (`"GB"`). The same ID works in every Sleeper endpoint. The player list also carries `espn_id`, `yahoo_id`, `gsis_id` (NFL) and `sportradar_id`, for cross-referencing other sources.
 

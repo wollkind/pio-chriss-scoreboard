@@ -46,7 +46,8 @@ User-facing description, data format and web API: `README.md`. This file holds t
 
 - `fetchScoreboard()` streams the reply through an ArduinoJson filter straight off the connection (`http.getStream()`, HTTP/1.0 so there is no chunk framing).
 - Games are stored in `g_games`. `scoreLine()` builds the text for a team; the panel and `/api/config` (`game` field) both use it.
-- Possession: `situation.possession` is an ESPN team ID, matched to the competitor's `team.id`. **Unverified against a live game.**
+- Possession: `situation.possession` is an ESPN team ID (string), matched to the competitor's `team.id`. Verified against live games on 2026-09-27: the parse, run on the computer with the same filter, gave the right team with the ball and red zone for all 9 live games. `STATUS_HALFTIME` is still unseen.
+- Nesting: the reply is 15 levels deep. ArduinoJson's default limit (10) applies to filtered-out parts too, so `getJson()` passes `NestingLimit(JSON_NESTING_LIMIT)` (32). Without it, v0.2 and v0.3 failed every scoreboard fetch with −2.
 - `WSH` is converted to Sleeper's `WAS`.
 
 ## Startup animation (`startup.cpp`)
@@ -82,8 +83,9 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.2:**
   - 9 players
   - Name size setting (Large, Medium, Narrow), with labels fitted to the width
-- **v0.3:** labels too wide for the row are shortened from the middle (`abbrev.h`) instead of cut off at the end
   - Game score line with a possession marker, from ESPN
   - Pages when the players don't fit on one screen
   - Startup animation
   - OTA: `ota` target on the main environment instead of a separate environment, no modem sleep, no espota `--debug`
+- **v0.3:** labels too wide for the row are shortened from the middle (`abbrev.h`) instead of cut off at the end
+- **v0.3.1:** fix: ESPN scoreboard parse failed with TooDeep; JSON nesting limit raised to 32

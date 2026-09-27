@@ -75,6 +75,7 @@
 #define STALE_MS           (5UL * 60 * 1000)    // no successful round for this long: points grey
 #define HTTP_TIMEOUT_MS    10000
 #define MAX_GAMES          16
+#define JSON_NESTING_LIMIT 32      // ESPN's scoreboard is 15 levels deep (2026-09-27)
 
 static_assert(PANEL_W == PANEL_H, "quarter-turn rotation needs a square panel");
 
@@ -401,16 +402,19 @@ static int getJson(const char *url, JsonDocument &doc, JsonDocument *filter, boo
     http.end();
     return code;
   }
+  // ESPN's scoreboard nests 15 levels deep. ArduinoJson's default limit (10) also applies to the
+  // parts a filter skips, so without a higher limit the parse fails with TooDeep.
+  const auto nesting = DeserializationOption::NestingLimit(JSON_NESTING_LIMIT);
   DeserializationError err;
   if (stream) {
-    err = filter ? deserializeJson(doc, http.getStream(), DeserializationOption::Filter(*filter))
-                 : deserializeJson(doc, http.getStream());
+    err = filter ? deserializeJson(doc, http.getStream(), DeserializationOption::Filter(*filter), nesting)
+                 : deserializeJson(doc, http.getStream(), nesting);
     http.end();
   } else {
     const String body = http.getString();
     http.end();
-    err = filter ? deserializeJson(doc, body, DeserializationOption::Filter(*filter))
-                 : deserializeJson(doc, body);
+    err = filter ? deserializeJson(doc, body, DeserializationOption::Filter(*filter), nesting)
+                 : deserializeJson(doc, body, nesting);
   }
   return err ? -2 : code;
 }

@@ -64,6 +64,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   <button data-kind="7">Passing TD</button>
   <button data-kind="8">Defensive TD</button>
   <button data-kind="9">Other</button>
+  <button data-kind="10">Small gain</button>
 </div>
 <div id="msg" class="dim"></div>
 

@@ -74,10 +74,23 @@
 #define BALL_W             5       // possession football, 5x3
 #define BALL_GAP           2       // blank columns between the football and the points
 #define SORT_BY_POINTS     0       // 0: the order set on the web page (arrows); 1: highest points first
-#define FLASH_MS           8000    // points that changed are drawn green this long
-#define STARTUP_ANIMATION  1       // 0: skip the startup animation
+#define FLASH_MS           8000    // points that changed are drawn green (gain) or red (loss) this long
+#define STARTUP_ANIMATION  0       // 0: skip the startup animation
 #define EVENT_MIN_PTS      1.0f    // a points loss at least this big gets the update screen; any gain does
 #define UPDATE_MS          3500    // how long the update screen shows
+#define SHINE_BLINK_MS     140     // name shine before an update: the row blinks inverted, this long on / off
+#define SHINE_BLINKS       3       // number of blinks
+#define SHINE_BLINK_TOTAL_MS (2 * SHINE_BLINKS * SHINE_BLINK_MS)
+#define SHINE_STEP_MS      55      // then a wave: delay from one letter to the next
+#define SHINE_HALF_MS      140     // each letter brightens this long, then fades this long
+#define SHINE_TAIL_MS      200     // pause on the scoreboard after the shine
+#define RAINBOW_STEP_MS    120     // gain under EVENT_MIN_PTS: name lights letter by letter, this far apart
+#define RAINBOW_HOLD_MS    1100    // each letter cycles through the rainbow this long
+#define RAINBOW_FADE_MS    700     // then fades back to the normal text colour
+#define RAINBOW_CYCLE_MS   1800    // one full trip round the colour wheel
+#define ROLL_MIN_MS        700     // points roll like an odometer through every tenth: shortest roll
+#define ROLL_STEP_MS       40      // plus this much per tenth
+#define ROLL_MAX_MS        2500    // longest roll
 #define MAX_EVENTS         6       // queued update screens; later ones are dropped when full
 #define HOSTNAME           "scoreboard"
 
@@ -114,11 +127,16 @@ struct Player {
   float pts;
   PointsState state;
   uint32_t changed_ms;   // millis() of the last points change, for the flash
+  bool dropped;          // the last points change was a loss: flash red
+  bool rolling;          // the points are rolling (or waiting to roll) from roll_from to pts
+  float roll_from;       // points shown when the change arrived
+  uint32_t roll_ms;      // millis() the roll started on the scoreboard; 0: not started yet
   float stats[ST_COUNT];
 };
 
 // One change worth the full-screen treatment.
 struct Event {
+  char id[12];       // Player::id, for the name shine on the scoreboard
   char label[16];
   char pos[4];
   char action[24];   // "RUSH FOR 30 YDS", "RECEIVING TD", ...
@@ -181,6 +199,9 @@ static Event g_current;
 static bool g_showing = false;
 static uint32_t g_show_ms = 0;
 static uint32_t g_event_seq = 0;
+static const char *g_shine_id = nullptr;   // player whose name shines, while drawScreen() runs for the shine
+static uint32_t g_shine_t = 0;             // ms into the shine
+static bool g_shine_rainbow = false;       // small gain: rainbow letter sequence instead of blink + wave
 
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -188,6 +209,8 @@ static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 }
 
 static const uint16_t COLOR_TEXT    = rgb565(235, 235, 235);
+static const uint16_t COLOR_SHINE_DIM = rgb565(45, 45, 45);   // name letters outside the shine wave
+static const uint16_t COLOR_SHINE   = rgb565(255, 245, 170);   // peak of the shine
 static const uint16_t COLOR_POINTS  = rgb565(255, 215, 140);
 static const uint16_t COLOR_FLASH   = rgb565(80, 255, 120);
 static const uint16_t COLOR_DIM     = rgb565(80, 80, 80);
@@ -709,6 +732,23 @@ static void queueEvent(const Event &e)
   ++g_event_count;
 }
 
+// Points roll: every tenth between roll_from and pts passes like a wheel, fast at first and
+// slowing to a stop.
+static uint32_t rollDuration(const Player &p)
+{
+  const long steps = labs(lroundf(p.pts * 10) - lroundf(p.roll_from * 10));
+  return std::min<uint32_t>(ROLL_MAX_MS, ROLL_MIN_MS + steps * ROLL_STEP_MS);
+}
+
+// Position of the wheel at `now`, in tenths of a point (fractional between two values).
+static float rollShown(const Player &p, uint32_t now)
+{
+  const float from = lroundf(p.roll_from * 10), to = lroundf(p.pts * 10);
+  const float u = std::min(1.0f, static_cast<float>(now - p.roll_ms) / rollDuration(p));
+  const float left = 1 - u;
+  return from + (to - from) * (1 - left * left * left);   // cubic ease-out
+}
+
 static void fetchTask(void *)
 {
   uint32_t last_state_ms = 0;
@@ -757,9 +797,20 @@ static void fetchTask(void *)
         Player &p = g_players[i];
         if (p.state == PTS_OK && state == PTS_OK && fabsf(p.pts - pts) > 0.001f) {
           p.changed_ms = millis();
-          // Every gain celebrates; only losses of EVENT_MIN_PTS or more interrupt the scoreboard.
+          p.dropped = pts < p.pts;
+          // The roll starts from what the panel shows now (mid-roll, or still waiting to roll).
+          if (!p.rolling) {
+            p.roll_from = p.pts;
+          } else if (p.roll_ms) {
+            p.roll_from = rollShown(p, millis()) / 10.0f;
+          }
+          p.rolling = true;
+          p.roll_ms = 0;
+          // Gains of EVENT_MIN_PTS or more celebrate; smaller gains only get the rainbow name.
+          // Only losses of EVENT_MIN_PTS or more interrupt the scoreboard.
           if (pts - p.pts > 0.001f || p.pts - pts >= EVENT_MIN_PTS - 0.001f) {
             Event e = {};
+            copyStr(e.id, sizeof(e.id), p.id);
             copyStr(e.label, sizeof(e.label), p.label);
             copyStr(e.pos, sizeof(e.pos), p.pos);
             e.delta = pts - p.pts;
@@ -852,6 +903,7 @@ static void handleTest()
       {"TD PASS", 4.0f, PLAY_PASS, true},
       {"DEFENSIVE TD", 6.0f, PLAY_DEFENSE, true},
       {"POINTS UP", 1.0f, PLAY_OTHER, false},
+      {"POINTS UP", 0.4f, PLAY_OTHER, false},   // under a full point: rainbow name only
   };
   constexpr int COUNT = sizeof(SAMPLES) / sizeof(SAMPLES[0]);
   static int next = 0;
@@ -869,9 +921,19 @@ static void handleTest()
   Event e = {};
   xSemaphoreTake(g_lock, portMAX_DELAY);
   if (g_count > 0) {
+    copyStr(e.id, sizeof(e.id), g_players[0].id);
     copyStr(e.label, sizeof(e.label), g_players[0].label);
     copyStr(e.pos, sizeof(e.pos), g_players[0].pos);
     e.pts = (g_players[0].state == PTS_OK ? g_players[0].pts : 0.0f) + sample.delta;
+    // Roll the real points up (or down) to themselves by the sample's delta, to show the wheel.
+    Player &p = g_players[0];
+    if (p.state == PTS_OK) {
+      p.roll_from = p.pts - sample.delta;
+      p.rolling = true;
+      p.roll_ms = 0;
+      p.changed_ms = millis();
+      p.dropped = sample.delta < 0;
+    }
   } else {
     copyStr(e.label, sizeof(e.label), "Test");
     copyStr(e.pos, sizeof(e.pos), "RB");
@@ -932,16 +994,22 @@ static void drawStatus(const char *line1, uint16_t c1, const char *line2, uint16
   }
 }
 
-// Possession marker: a football, 5x3, brown with a white lace (red inside the opponent's 20).
-//   .###.
-//   ##-##    (- = lace)
-//   .###.
+// Possession marker: a football, 5x3. Hollow brown outside the opponent's 20, solid red with a
+// white lace inside it.
+//   .###.      .###.
+//   #...#      ##-##    (- = lace)
+//   .###.      .###.
 static void drawBall(int x, int y, bool red_zone)
 {
   const uint16_t c = red_zone ? COLOR_RED_ZONE : COLOR_BALL;
   canvas->drawFastHLine(x + 1, y, 3, c);
-  canvas->drawFastHLine(x, y + 1, 5, c);
-  canvas->drawPixel(x + 2, y + 1, COLOR_LACE);
+  if (red_zone) {
+    canvas->drawFastHLine(x, y + 1, 5, c);
+    canvas->drawPixel(x + 2, y + 1, COLOR_LACE);
+  } else {
+    canvas->drawPixel(x, y + 1, c);
+    canvas->drawPixel(x + 4, y + 1, c);
+  }
   canvas->drawFastHLine(x + 1, y + 2, 3, c);
 }
 
@@ -954,20 +1022,118 @@ static void teamPossession(const char *team, bool &live, bool &has_ball, bool &r
   red_zone = has_ball && game->red_zone;
 }
 
+// Fully saturated colour for hue h (wraps at 1).
+static uint16_t rainbow565(float h)
+{
+  h -= floorf(h);
+  const float x = h * 6.0f;
+  const int i = static_cast<int>(x);
+  const uint8_t f = static_cast<uint8_t>((x - i) * 255);
+  switch (i % 6) {
+    case 0: return rgb565(255, f, 0);
+    case 1: return rgb565(255 - f, 255, 0);
+    case 2: return rgb565(0, 255, f);
+    case 3: return rgb565(0, 255 - f, 255);
+    case 4: return rgb565(f, 0, 255);
+    default: return rgb565(255, 0, 255 - f);
+  }
+}
+
+static uint32_t rainbowMs(const char *label)
+{
+  return strlen(label) * RAINBOW_STEP_MS + RAINBOW_HOLD_MS + RAINBOW_FADE_MS + SHINE_TAIL_MS;
+}
+
+// Mix of two colours, f = 0 (a) to 255 (b).
+static uint16_t blend565(uint16_t a, uint16_t b, int f)
+{
+  const int r = ((a >> 11) * (255 - f) + (b >> 11) * f) / 255;
+  const int g = (((a >> 5) & 0x3F) * (255 - f) + ((b >> 5) & 0x3F) * f) / 255;
+  const int bl = ((a & 0x1F) * (255 - f) + (b & 0x1F) * f) / 255;
+  return (r << 11) | (g << 5) | bl;
+}
+
+// One Font4x6 character with its top at y + dy, only the rows from clip_top to clip_bottom.
+static void drawGlyphClipped(char ch, int x, int y, int dy, int clip_top, int clip_bottom, uint16_t color)
+{
+  const GFXfont &font = Font4x6;
+  if (ch < font.first || ch > font.last) {
+    return;
+  }
+  const GFXglyph &g = font.glyph[ch - font.first];
+  const uint8_t *bits = font.bitmap + g.bitmapOffset;
+  int bit = 0;
+  for (int row = 0; row < g.height; ++row) {
+    const int py = y + Font4x6_ASCENT + g.yOffset + row + dy;
+    for (int col = 0; col < g.width; ++col, ++bit) {
+      if ((bits[bit >> 3] & (0x80 >> (bit & 7))) && py >= clip_top && py <= clip_bottom) {
+        canvas->drawPixel(x + g.xOffset + col, py, color);
+      }
+    }
+  }
+}
+
+// Points mid-roll in the row at y: characters that differ between `from` and `to` are on a wheel,
+// `off` pixels turned. Rolling up (dir > 0) the new digit comes in from below; down, from above.
+static void drawRoll(const char *from, const char *to, int dir, int off, int y, uint16_t color)
+{
+  // Right-align both, padded to the same length.
+  char a[8], b[8];
+  const int len = std::max(strlen(from), strlen(to));
+  snprintf(a, sizeof(a), "%*s", len, from);
+  snprintf(b, sizeof(b), "%*s", len, to);
+  const int x0 = PANEL_W - inkWidth(a[0] == ' ' ? b : a, &Font4x6);
+  const int advance = Font4x6.glyph[0].xAdvance;
+  const int top = y, bottom = y + ROW_H - 2;   // the 5 letter rows
+  for (int i = 0; i < len; ++i) {
+    const int x = x0 + i * advance;
+    if (a[i] == b[i]) {
+      drawGlyphClipped(a[i], x, y, 0, top, bottom, color);
+    } else {
+      drawGlyphClipped(a[i], x, y, -dir * off, top, bottom, color);
+      drawGlyphClipped(b[i], x, y, dir * (ROW_H - off), top, bottom, color);
+    }
+  }
+}
+
 // One player row, ROW_H pixels tall starting at y.
 static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
 {
+  // Shine, part 1: the whole row blinks inverted (gold bar, black text).
+  const bool shine = g_shine_id && !strcmp(p.id, g_shine_id);
+  const bool blink_on = shine && !g_shine_rainbow && g_shine_t < SHINE_BLINK_TOTAL_MS && (g_shine_t / SHINE_BLINK_MS) % 2 == 0;
+  if (blink_on) {
+    canvas->fillRect(0, y, PANEL_W, ROW_H - 1, COLOR_SHINE);
+  }
   canvas->fillRect(0, y, 2, ROW_H - 1, positionColor(p.pos));
   canvas->setFont(&Font4x6);
   const int base = y + Font4x6_ASCENT;
 
-  // Points, right-aligned to the panel edge.
-  char pts[8];
+  // Points, right-aligned to the panel edge. While rolling, `pts` is the value leaving and `next`
+  // the one coming in, `roll_off` pixels (0 to ROW_H) along.
+  char pts[8], next[8] = "";
+  int roll_off = 0, roll_dir = 0;
   uint16_t color = COLOR_POINTS;
-  if (p.state == PTS_OK) {
+  if (p.state == PTS_OK && p.rolling && p.roll_ms) {
+    const float pos = rollShown(p, now);
+    const int to = lroundf(p.pts * 10);
+    roll_dir = to > pos ? 1 : -1;
+    int shown = roll_dir > 0 ? static_cast<int>(floorf(pos)) : static_cast<int>(ceilf(pos));
+    roll_off = static_cast<int>(lroundf(fabsf(pos - shown) * ROW_H));
+    if (roll_off >= ROW_H) {
+      shown += roll_dir;
+      roll_off = 0;
+    }
+    formatPoints(pts, sizeof(pts), shown / 10.0f);
+    if (roll_off) {
+      formatPoints(next, sizeof(next), (shown + roll_dir) / 10.0f);
+    }
+  } else if (p.state == PTS_OK) {
     formatPoints(pts, sizeof(pts), p.pts);
+  }
+  if (p.state == PTS_OK) {
     if (p.changed_ms && now - p.changed_ms < FLASH_MS) {
-      color = COLOR_FLASH;
+      color = p.dropped ? COLOR_RED_ZONE : COLOR_FLASH;
     }
   } else {
     snprintf(pts, sizeof(pts), "-");   // no stats yet this week (or not fetched yet)
@@ -976,10 +1142,17 @@ static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
   if (stale && p.state != PTS_UNKNOWN) {
     color = COLOR_DIM;
   }
-  const int pts_x = PANEL_W - inkWidth(pts, &Font4x6);
-  canvas->setTextColor(color);
-  canvas->setCursor(pts_x, base);
-  canvas->print(pts);
+  if (blink_on) {
+    color = 0;
+  }
+  const int pts_x = PANEL_W - std::max(inkWidth(pts, &Font4x6), inkWidth(next, &Font4x6));
+  if (roll_off) {
+    drawRoll(pts, next, roll_dir, roll_off, y, color);
+  } else {
+    canvas->setTextColor(color);
+    canvas->setCursor(pts_x, base);
+    canvas->print(pts);
+  }
 
   // Football before the points while the team has the ball. Its space is kept for the whole game,
   // so the label doesn't change length every time possession changes.
@@ -997,9 +1170,47 @@ static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
   copyStr(label, sizeof(label), p.label);
   const int right = live ? ball_x : pts_x;
   abbreviate(label, right - LABEL_GAP - LABEL_X, [](const char *text) { return inkWidth(text, &Font4x6); });
-  canvas->setTextColor(COLOR_TEXT);
   canvas->setCursor(LABEL_X, base);
-  canvas->print(label);
+  if (blink_on) {
+    canvas->setTextColor(0);
+    canvas->print(label);
+  } else if (shine && g_shine_rainbow) {
+    // Small gain: letters light one by one, each cycling through the rainbow, then fade to normal.
+    const int t = static_cast<int>(g_shine_t);
+    for (int i = 0; label[i]; ++i) {
+      const int d = t - i * RAINBOW_STEP_MS;   // < 0: not lit yet
+      uint16_t c = COLOR_SHINE_DIM;
+      if (d >= RAINBOW_HOLD_MS + RAINBOW_FADE_MS) {
+        c = COLOR_TEXT;
+      } else if (d >= 0) {
+        const uint16_t hue = rainbow565(i * 0.09f + static_cast<float>(t) / RAINBOW_CYCLE_MS);
+        c = d < RAINBOW_HOLD_MS ? hue : blend565(hue, COLOR_TEXT, (d - RAINBOW_HOLD_MS) * 255 / RAINBOW_FADE_MS);
+      }
+      canvas->setTextColor(c);
+      canvas->print(label[i]);
+    }
+  } else if (shine && g_shine_t < SHINE_BLINK_TOTAL_MS) {
+    canvas->setTextColor(COLOR_SHINE);   // blink off phase: bright text on black
+    canvas->print(label);
+  } else if (shine) {
+    // Shine, part 2: a wave runs left to right. Each letter waits dimmed, brightens as the wave
+    // reaches it, then fades back to the normal text colour.
+    const int wave_t = static_cast<int>(g_shine_t) - SHINE_BLINK_TOTAL_MS;
+    for (int i = 0; label[i]; ++i) {
+      const int d = wave_t - SHINE_HALF_MS - i * SHINE_STEP_MS;   // < 0: wave not here yet
+      uint16_t c = d >= SHINE_HALF_MS ? COLOR_TEXT : COLOR_SHINE_DIM;
+      if (d > -SHINE_HALF_MS && d <= 0) {
+        c = blend565(COLOR_SHINE_DIM, COLOR_SHINE, 255 + d * 255 / SHINE_HALF_MS);
+      } else if (d > 0 && d < SHINE_HALF_MS) {
+        c = blend565(COLOR_SHINE, COLOR_TEXT, d * 255 / SHINE_HALF_MS);
+      }
+      canvas->setTextColor(c);
+      canvas->print(label[i]);
+    }
+  } else {
+    canvas->setTextColor(COLOR_TEXT);
+    canvas->print(label);
+  }
 }
 
 // Games in the order the total line rotates through them: live, then final, then not started.
@@ -1102,6 +1313,15 @@ static void drawScreen(uint32_t now)
   Player rows[MAX_PLAYERS];
   int count;
   xSemaphoreTake(g_lock, portMAX_DELAY);
+  // Rolls start once the scoreboard is on screen, and end when the wheel stops.
+  for (int i = 0; i < g_count; ++i) {
+    Player &p = g_players[i];
+    if (p.rolling && !p.roll_ms) {
+      p.roll_ms = now ? now : 1;
+    } else if (p.rolling && now - p.roll_ms >= rollDuration(p)) {
+      p.rolling = false;
+    }
+  }
   memcpy(rows, g_players, sizeof(rows));
   count = g_count;
   xSemaphoreGive(g_lock);
@@ -1236,7 +1456,27 @@ static bool drawEventScreens(uint32_t now)
       return false;
     }
   }
-  const uint32_t t = now - g_show_ms;
+  uint32_t t = now - g_show_ms;
+  // A gain under a full point only gets the rainbow name on the scoreboard.
+  const bool small = g_current.delta > 0 && g_current.delta < EVENT_MIN_PTS - 0.001f;
+  // First the player's name shines on the scoreboard.
+  const uint32_t shine = small ? rainbowMs(g_current.label)
+                               : SHINE_BLINK_TOTAL_MS + strlen(g_current.label) * SHINE_STEP_MS +
+                                     2 * SHINE_HALF_MS + SHINE_TAIL_MS;
+  if (t < shine) {
+    g_shine_id = g_current.id;
+    g_shine_t = t;
+    g_shine_rainbow = small;
+    drawScreen(now);
+    g_shine_id = nullptr;
+    g_shine_rainbow = false;
+    return true;
+  }
+  if (small) {
+    g_showing = false;
+    return drawEventScreens(now);
+  }
+  t -= shine;
   // Losses skip the party.
   const uint32_t celebrate = g_current.delta > 0 ? celebrationMs(g_current.touchdown) : 0;
   if (t < celebrate) {

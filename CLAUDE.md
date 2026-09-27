@@ -34,12 +34,14 @@ User-facing description, data format and web API: `README.md`. This file holds t
 - **Player row:**
   - x 0–1: position bar
   - label from x 3, shortened by `abbreviate()` (`src/abbrev.h`) until its ink ends `LABEL_GAP` px before the football space (live game) or the points
-  - football `drawBall()` 5×3 at `pts_x - BALL_GAP - BALL_W`, row offset +1: brown with a white lace pixel, red in the red zone. Drawn only while the team has the ball, but its space is reserved for the whole live game (`teamPossession()`).
+  - football `drawBall()` 5×3 at `pts_x - BALL_GAP - BALL_W`, row offset +1: hollow brown outline outside the red zone, solid red with a white lace pixel inside it. Drawn only while the team has the ball, but its space is reserved for the whole live game (`teamPossession()`).
   - points right-aligned to the ink edge at x 63
 - **Total line (`drawTotalLine()`):**
   - total of `PTS_OK` players right-aligned, gold
   - left: `orderedGames()` (live, final, pre), rotated every `SCORES_ROTATE_MS`. `drawGameScore()` picks the first form that fits before the total: `AWY 17 HOM 10` (4×6), `AWY17 HOM10` (4×6), then the same two in TomThumb. Upcoming games use `AWY - HOM 1:00P`, then `AWY - HOM`.
 - **Points format:** `formatPoints()` switches to whole numbers at ≥ 99.95 or ≤ −9.95, so values stay within 4 characters.
+- **Points flash:** a changed score is drawn green (gain) or red (loss, `Player.dropped`) for `FLASH_MS` (8 s).
+- **Points roll:** a changed score rolls like an odometer through every tenth from the old value (`Player.roll_from`) to the new one. Only the characters that differ turn; going up the new digit enters from below, going down from above (`drawRoll()`, clipped per glyph by `drawGlyphClipped()`). Cubic ease-out over `ROLL_MIN_MS` 700 + `ROLL_STEP_MS` 40 per tenth, at most `ROLL_MAX_MS` 2500. The roll starts on the first `drawScreen()` after the change (usually the name shine), not while a celebration covers the scoreboard. A change mid-roll restarts from the value on screen. The test button rolls the first player by the sample's delta. **Not seen on hardware yet.**
 - **Order:** the roster order from the web page (↑/↓). `SORT_BY_POINTS 1` sorts by points instead.
 - **Fonts:** `tools/bdf2gfx.py` converts `tools/fonts/4x6.bdf` and `5x7.bdf` (public domain, from olikraus/u8g2 at d6c8499) into `src/fonts/*.h`.
 - **Previews:** `tools/render_preview.py` draws `docs/panel-preview.png` and `docs/update-preview.png`.
@@ -59,6 +61,10 @@ User-facing description, data format and web API: `README.md`. This file holds t
   - `drawDefTD()`: jumped route, return to the end zone on the left, `TO THE` `HOUSE!`
   - `drawTouchdown()` (`TOUCH` `DOWN!` over fireworks) remains for a TD of any other kind (none is produced today).
 - **Screens (`drawEventScreens()`, loop):**
+  - First, on the scoreboard, the player's row shines (`g_shine_id`, `drawPlayer()`), matched by `Event.id`:
+    - blink: the whole row inverts (gold `COLOR_SHINE` bar, black text) `SHINE_BLINKS` (3) times, `SHINE_BLINK_MS` (140) on / off, gold text on black in the off phases
+    - wave: letters start dark (`COLOR_SHINE_DIM` 45 grey), each brightens to `COLOR_SHINE` over `SHINE_HALF_MS` (140) and fades to normal, `SHINE_STEP_MS` (55) apart, then `SHINE_TAIL_MS` (200)
+    - about 2.0 s for a 12-letter name
   - Gains: `drawCelebration()` for `celebrationMs()`, then `drawUpdate()` for `UPDATE_MS` 3500.
   - Losses: `drawUpdate()` only.
   - Then the next queued event, or the scoreboard.
@@ -126,3 +132,4 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.5:** 5 px font, 10 lines (9 players + total line with rotating NFL scores). Celebration and update screens on points changes. Test button. Name-size setting removed.
 - **v0.6:** fix: ESPN reply buffered in PSRAM before parsing (stream parse failed on the board, so no scores or possession). Celebration per kind of play, separate touchdown screen (3–3.5 s). Every gain celebrates. One test button per celebration.
 - **v0.6.1:** a touchdown scene per kind (rush, pass, catch, defense). "Run" renamed "Rush". Upcoming games `AWY - HOM` instead of `AWY@HOM`.
+- **v0.7:** name shine on the scoreboard before each update screen (blink + wave). Gains under 1.0 get only a rainbow name (letter by letter, `RAINBOW_*`). Losses flash red. Hollow football outside the red zone. Points roll like an odometer. Startup animation off (`STARTUP_ANIMATION 0`). OTA upload uses an empty password.

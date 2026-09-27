@@ -87,7 +87,7 @@ Tap the yellow **Save to panel** button.
 - **Remove a player:** tap the **✕** next to them, then tap **Save to panel**.
 - **Swap a player:** remove one, add the other, then tap **Save to panel**.
 - **Brightness** or **Name size:** change it, then tap **Save to panel**.
-- The ↑ button changes the list order on the page. The panel itself always sorts players by points, highest first.
+- **Change the order:** the ↑ and ↓ buttons move a player up or down. The panel shows the players in the same order, top to bottom. Tap **Save to panel** afterwards.
 
 The scoreboard remembers the players even if it is unplugged.
 

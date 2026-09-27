@@ -1,7 +1,7 @@
 // pio-chriss-scoreboard: live fantasy football points on the Waveshare ESP32-S3-RGB-Matrix with a
 // 64x64 HUB75 panel.
 //
-// Up to 9 players on one screen, sorted by points (highest first). Each player gets a row: a
+// Up to 9 players on one screen, in the order set on the web page. Each player gets a row: a
 // position-coloured bar, a label and this week's fantasy points, with a small football before the
 // points while the player's team has the ball. A player's points turn green for a few seconds when
 // they change.
@@ -63,7 +63,7 @@
 #define MIN_ROW_H          7       // 9 rows x 7 px = 63; row 63 stays free for the error pixel
 #define BALL_W             5       // possession football, 5x3
 #define BALL_GAP           2       // blank columns between the football and the points
-#define SORT_BY_POINTS     1       // 0: keep the order chosen on the web page
+#define SORT_BY_POINTS     0       // 0: the order set on the web page (arrows); 1: highest points first
 #define FLASH_MS           8000    // points that changed are drawn green this long
 #define STARTUP_ANIMATION  1       // 0: skip the startup animation
 #define HOSTNAME           "scoreboard"

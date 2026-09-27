@@ -38,7 +38,7 @@ User-facing description, data format and web API: `README.md`. This file holds t
   - 2 Narrow: u8g2 squeezed regular 7 for the label, 5×7 for the points. Descenders clipped at 9 rows.
   - Label and points share one baseline: `RowFont::baseline`, 0 for the built-in font, which draws from the top.
 - **Points format:** `formatPoints()` switches to whole numbers at ≥ 99.95 or ≤ −9.95, so values stay within 4 characters.
-- **Sorting:** `SORT_BY_POINTS` 1 sorts with `std::stable_sort`. Players without stats sort last.
+- **Order:** the roster order from the web page (↑/↓ buttons), top to bottom. `SORT_BY_POINTS 1` sorts by points instead (`std::stable_sort`, players without stats last).
 - **Fonts:** `tools/bdf2gfx.py` converts the BDF files in `tools/fonts/` (public domain, from olikraus/u8g2 at d6c8499) into `src/fonts/*.h`. Rerun it to change fonts.
 - **Previews:** `tools/render_preview.py` draws `docs/panel-preview*.png` for all three sizes.
 
@@ -90,3 +90,4 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.3:** labels too wide for the row are shortened from the middle (`abbrev.h`) instead of cut off at the end
 - **v0.3.1:** fix: ESPN scoreboard parse failed with TooDeep; JSON nesting limit raised to 32
 - **v0.4:** all 9 players on one screen (7 px rows). Score lines and pages removed from the panel; possession is a brown football before the points. Default name size Medium.
+- **v0.4.1:** panel order is the order set on the web page (↑ and ↓ buttons) instead of by points.

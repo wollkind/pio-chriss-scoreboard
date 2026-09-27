@@ -38,7 +38,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <h1>Scoreboard</h1>
 <div class="meta" id="meta">Loading...</div>
 
-<h2 style="font-size:16px">On the panel (<span id="count">0</span>/9)</h2>
+<h2 style="font-size:16px">On the panel (<span id="count">0</span>/9), top to bottom</h2>
 <ul id="roster"></ul>
 
 <div class="row">
@@ -126,6 +126,8 @@ function renderRoster() {
     label.oninput = () => { p.label = label.value; setDirty(); };
     const up = el('button', { textContent: '↑', title: 'Move up', disabled: i === 0 });
     up.onclick = () => { [roster[i - 1], roster[i]] = [roster[i], roster[i - 1]]; setDirty(); renderRoster(); };
+    const down = el('button', { textContent: '\u2193', title: 'Move down', disabled: i === roster.length - 1 });
+    down.onclick = () => { [roster[i + 1], roster[i]] = [roster[i], roster[i + 1]]; setDirty(); renderRoster(); };
     const rm = el('button', { textContent: '✕', title: 'Remove' });
     rm.onclick = () => { roster.splice(i, 1); setDirty(); renderRoster(); renderResults(); };
     const who = el('span', { className: 'who' },
@@ -133,7 +135,7 @@ function renderRoster() {
       el('span', { className: 'dim', textContent: p.team }));
     if (p.game) who.append(el('div', { className: 'game dim', textContent: p.game }));
     const pts = el('span', { className: 'pts', textContent: p.pts == null ? '-' : p.pts.toFixed(1) });
-    ul.append(el('li', {}, who, label, pts, up, rm));
+    ul.append(el('li', {}, who, label, pts, up, down, rm));
   });
 }
 

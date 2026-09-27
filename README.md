@@ -16,7 +16,8 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 | v0.2 | 9 players, pages, game score lines with possession, name sizes, startup animation, faster OTA and `ota` target | not yet flashed |
 | v0.3 | long labels shortened from the middle | not yet flashed |
 | v0.3.1 | fix: ESPN scoreboard parse failed (JSON nesting limit) | not yet flashed |
-| v0.4 (current `main`) | all 9 players on one screen; score lines and pages removed; possession shown as a brown football before the points; Medium is the default name size | not yet flashed |
+| v0.4 | all 9 players on one screen; score lines and pages removed; possession shown as a brown football before the points; Medium is the default name size | not yet flashed |
+| v0.4.1 (current `main`) | panel order set on the web page with ↑/↓ buttons instead of by points | not yet flashed |
 
 Open points:
 - **Possession marker:** checked against live games on 2026-09-27 at 17:20 UTC; the fields are as expected (see the ESPN section). v0.2 and v0.3 had a bug: ArduinoJson's default nesting limit rejected ESPN's reply, so every scoreboard fetch failed. It is fixed on `main` (v0.3.1).
@@ -26,7 +27,7 @@ Open points:
 ## What it shows
 
 - **Startup:** a football is kicked through the goalposts, a rainbow pinwheel spins up and dissolves into confetti, and the panel says "GOOD AFTERNOON CHAMPIONS !!!" (about 9 s, while WiFi connects). `STARTUP_ANIMATION 0` skips it.
-- **Players:** up to 9, sorted by points (highest first). Players with no stats yet go last.
+- **Players:** up to 9, top to bottom in the order set on the web page with the ↑ and ↓ buttons. `SORT_BY_POINTS 1` in `src/main.cpp` sorts by points instead.
 - **All players on one screen:** one row per player, 7 px each with 9 players (up to 8 px with fewer).
 - **Each row:**
   - a position bar on the left: QB red, RB green, WR blue, TE orange, K purple, DEF grey
@@ -155,6 +156,7 @@ Build output: RAM 13.1 % (43 KB static), flash 12.3 % (518 KB of the 4 MB app sl
   ```
   pio run -e esp32s3 -t ota
   ```
+  In VS Code: PlatformIO sidebar → Project Tasks → **esp32s3** → **Custom** → **OTA upload**. (The separate `esp32s3-ota` environment, and its Upload task, no longer exist.)
   This builds only if something changed, then sends the same `firmware.bin` a USB upload would use. The `ota` target comes from `scripts/ota.py`. Earlier versions had a separate `esp32s3-ota` environment, and PlatformIO builds every environment in its own folder, so the first OTA upload recompiled everything.
 - **Address:** `scoreboard.local` by default. If that doesn't resolve, set `SCOREBOARD_HOST` to the panel's IP.
 - **Speed:** the firmware turns off WiFi modem sleep (`WiFi.setSleep(false)`). espota sends 1 KB at a time and waits for the board to answer each block. With modem sleep on, each answer can wait for the access point's next beacon (typically about 100 ms), so a 520 KB image took minutes. The upload also runs without espota's `--debug`, which PlatformIO's built-in OTA upload adds and which printed a "Chunk response" line for every block. The improved speed has not been measured on hardware yet.

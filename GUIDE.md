@@ -5,7 +5,7 @@ This guide is for anyone setting up the scoreboard at the party. No technical kn
 ## Before you start
 
 - The scoreboard must be plugged in and switched on.
-- Your phone must be on the **same WiFi network** as the scoreboard. Ask whoever set it up which network that is.
+- Your phone must be on the **same WiFi network** as the scoreboard. Ask whoever set it up which network that is. If the scoreboard runs on the host's phone hotspot, join that hotspot.
 - Your phone must have internet access. The list of NFL players is downloaded from the internet.
 
 ## Step 1: Open the scoreboard's page
@@ -53,7 +53,15 @@ The panel is small, so each player is shown with a short name. The page fills in
 
 - To change a short name, tap the box next to the player and type a new one, for example `Patty` instead of `Mahomes`.
 - If a name is too long, the panel leaves out letters from the middle, mostly vowels, so it stays readable. For example `Washington` becomes `Wshngtn`. For a different short form, type your own.
-- **Name size** changes how many letters fit: **Large** about 6, **Medium** about 7 or 8, **Narrow** about 8 or 9. Try one, tap **Save to panel**, and look at the panel.
+- **Name size** changes how many letters fit:
+
+  | Name size | Letters | Players per screen |
+  |---|---|---|
+  | Large | about 6 | 4 |
+  | Medium | about 7 or 8 | 5 |
+  | Narrow | about 8 or 9 | 4 |
+
+  Try one, tap **Save to panel**, and look at the panel.
 
 ## Step 4: Choose the scoring
 
@@ -106,7 +114,7 @@ The scoreboard remembers the players even if it is unplugged.
   | Grey | DEF |
 
 - The points and scores are for the current week. They update about every 30 seconds.
-- A row turns **green** for a few seconds when that player's points change.
+- A player's points turn **green** for a few seconds when they change.
 - A grey **-** means the player has not played yet this week, or has a bye.
 - If all the numbers turn grey, the scoreboard has lost its internet connection and the points may be out of date.
 
@@ -119,5 +127,7 @@ The scoreboard remembers the players even if it is unplugged.
 | The search box says **Player list failed to load** | Your phone has no internet access. Connect to the internet and reload the page. |
 | **The panel shows at most 9 players.** | Remove a player before adding another. |
 | **Save failed** | Reload the page and try again. |
+| A name on the panel is missing letters | That is on purpose: long names lose letters from the middle to fit. Type a shorter name yourself, or pick a different **Name size**. |
+| A tiny red dot in the bottom-right corner | The scoreboard could not fetch the latest points or scores. It keeps trying every 30 seconds. |
 | The panel says **WIFI..** | The scoreboard is still connecting to WiFi. Wait a minute. If it stays, the WiFi details in the scoreboard need fixing by whoever set it up. |
 | The panel says **SET WIFI** | The scoreboard has no WiFi details. Whoever set it up needs to add them. |

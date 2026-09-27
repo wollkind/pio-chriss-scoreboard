@@ -18,8 +18,8 @@ Plain-language instructions for guests (finding the board, picking players): [`G
 
 Open points:
 - **Possession marker:** ESPN's `situation` fields were not in the reply when this was written (no game live). Their names are from the endpoint's commonly published format, not from a live reply.
-- **OTA speed:** the fix (no modem sleep) only takes effect once v0.2 or later is running, so the first update from v0.1 is still slow. The speed afterwards has not been measured.
-- **Live timing:** how soon points and scores move after a play has not been measured.
+- **OTA flashing speed:** flashing firmware over WiFi was very slow on v0.1. The fix (WiFi modem sleep off) is part of the firmware on the board, so it only helps once v0.2 or later is running: the OTA flash that installs v0.2 over v0.1 is still slow (or flash that one over USB). The speed of later OTA flashes has not been measured.
+- **Data delay:** how soon points and scores on the panel change after a play has not been measured.
 
 ## What it shows
 

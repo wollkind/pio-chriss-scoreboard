@@ -36,6 +36,7 @@ User-facing description, data format and web API: `README.md`. This file holds t
   - label from x 3, shortened by `abbreviate()` (`src/abbrev.h`) until its ink ends `LABEL_GAP` px before the football space (live game) or the points
   - football `drawBall()` 5×3 at `pts_x - BALL_GAP - BALL_W`, row offset +1: hollow brown outline outside the red zone, solid red with a white lace pixel inside it. Drawn only while the team has the ball, but its space is reserved for the whole live game (`teamPossession()`).
   - points right-aligned to the ink edge at x 63
+  - game final (`teamPossession()` `final`): label and points `COLOR_DIM`, position bar darkened. A points flash, shine or rainbow still shows over it.
 - **Total line (`drawTotalLine()`):**
   - total of `PTS_OK` players right-aligned, gold
   - left: `orderedGames()` (live, final, pre), rotated every `SCORES_ROTATE_MS`. `drawGameScore()` picks the first form that fits before the total: `AWY 17 HOM 10` (4×6), `AWY17 HOM10` (4×6), then the same two in TomThumb. Upcoming games use `AWY - HOM 1:00P`, then `AWY - HOM`.
@@ -139,3 +140,4 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.6:** fix: ESPN reply buffered in PSRAM before parsing (stream parse failed on the board, so no scores or possession). Celebration per kind of play, separate touchdown screen (3–3.5 s). Every gain celebrates. One test button per celebration.
 - **v0.6.1:** a touchdown scene per kind (rush, pass, catch, defense). "Run" renamed "Rush". Upcoming games `AWY - HOM` instead of `AWY@HOM`.
 - **v0.7:** name shine on the scoreboard before each update screen (blink + wave). Gains under 1.0 get only a rainbow name (letter by letter, `RAINBOW_*`). Losses flash red. Hollow football outside the red zone. Points roll like an odometer. Startup animation off (`STARTUP_ANIMATION 0`). OTA upload uses an empty password.
+- **v0.7.1:** players whose game is final are drawn dimmed (`COLOR_DIM` text and points, darker position bar). Startup animation back on (`STARTUP_ANIMATION 1`).

@@ -156,7 +156,7 @@ int main(int argc, char **argv)
 {
   const std::string dir = argc > 1 ? argv[1] : ".";
 
-  // Startup animation (off by default in the firmware: STARTUP_ANIMATION 0).
+  // Startup animation (STARTUP_ANIMATION in the firmware).
   {
     resetBoard();
     FILE *f = openScene(dir, "startup");

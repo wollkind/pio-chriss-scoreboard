@@ -75,7 +75,7 @@
 #define BALL_GAP           2       // blank columns between the football and the points
 #define SORT_BY_POINTS     0       // 0: the order set on the web page (arrows); 1: highest points first
 #define FLASH_MS           8000    // points that changed are drawn green (gain) or red (loss) this long
-#define STARTUP_ANIMATION  0       // 0: skip the startup animation
+#define STARTUP_ANIMATION  1       // 0: skip the startup animation
 #define EVENT_MIN_PTS      1.0f    // a points loss at least this big gets the update screen; any gain does
 #define UPDATE_MS          3500    // how long the update screen shows
 #define SHINE_BLINK_MS     140     // name shine before an update: the row blinks inverted, this long on / off
@@ -1013,11 +1013,12 @@ static void drawBall(int x, int y, bool red_zone)
   canvas->drawFastHLine(x + 1, y + 2, 3, c);
 }
 
-// Possession state of a team's game. Caller holds g_lock.
-static void teamPossession(const char *team, bool &live, bool &has_ball, bool &red_zone)
+// State of a team's game: live, over, and possession. Caller holds g_lock.
+static void teamPossession(const char *team, bool &live, bool &final, bool &has_ball, bool &red_zone)
 {
   const Game *game = team[0] ? findGame(team) : nullptr;
   live = game && game->state == GAME_LIVE;
+  final = game && game->state == GAME_FINAL;
   has_ball = live && game->poss[0] && !strcmp(game->poss, team);
   red_zone = has_ball && game->red_zone;
 }
@@ -1105,7 +1106,15 @@ static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
   if (blink_on) {
     canvas->fillRect(0, y, PANEL_W, ROW_H - 1, COLOR_SHINE);
   }
-  canvas->fillRect(0, y, 2, ROW_H - 1, positionColor(p.pos));
+
+  // Game state; players whose game is over are drawn dimmed.
+  bool live, final, has_ball, red_zone;
+  xSemaphoreTake(g_lock, portMAX_DELAY);
+  teamPossession(p.team, live, final, has_ball, red_zone);
+  xSemaphoreGive(g_lock);
+  const uint16_t text = final ? COLOR_DIM : COLOR_TEXT;
+
+  canvas->fillRect(0, y, 2, ROW_H - 1, final ? blend565(positionColor(p.pos), 0, 150) : positionColor(p.pos));
   canvas->setFont(&Font4x6);
   const int base = y + Font4x6_ASCENT;
 
@@ -1113,7 +1122,7 @@ static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
   // the one coming in, `roll_off` pixels (0 to ROW_H) along.
   char pts[8], next[8] = "";
   int roll_off = 0, roll_dir = 0;
-  uint16_t color = COLOR_POINTS;
+  uint16_t color = final ? COLOR_DIM : COLOR_POINTS;
   if (p.state == PTS_OK && p.rolling && p.roll_ms) {
     const float pos = rollShown(p, now);
     const int to = lroundf(p.pts * 10);
@@ -1156,10 +1165,6 @@ static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
 
   // Football before the points while the team has the ball. Its space is kept for the whole game,
   // so the label doesn't change length every time possession changes.
-  bool live, has_ball, red_zone;
-  xSemaphoreTake(g_lock, portMAX_DELAY);
-  teamPossession(p.team, live, has_ball, red_zone);
-  xSemaphoreGive(g_lock);
   const int ball_x = pts_x - BALL_GAP - BALL_W;
   if (has_ball) {
     drawBall(ball_x, y + 1, red_zone);
@@ -1181,10 +1186,10 @@ static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
       const int d = t - i * RAINBOW_STEP_MS;   // < 0: not lit yet
       uint16_t c = COLOR_SHINE_DIM;
       if (d >= RAINBOW_HOLD_MS + RAINBOW_FADE_MS) {
-        c = COLOR_TEXT;
+        c = text;
       } else if (d >= 0) {
         const uint16_t hue = rainbow565(i * 0.09f + static_cast<float>(t) / RAINBOW_CYCLE_MS);
-        c = d < RAINBOW_HOLD_MS ? hue : blend565(hue, COLOR_TEXT, (d - RAINBOW_HOLD_MS) * 255 / RAINBOW_FADE_MS);
+        c = d < RAINBOW_HOLD_MS ? hue : blend565(hue, text, (d - RAINBOW_HOLD_MS) * 255 / RAINBOW_FADE_MS);
       }
       canvas->setTextColor(c);
       canvas->print(label[i]);
@@ -1198,17 +1203,17 @@ static void drawPlayer(const Player &p, int y, bool stale, uint32_t now)
     const int wave_t = static_cast<int>(g_shine_t) - SHINE_BLINK_TOTAL_MS;
     for (int i = 0; label[i]; ++i) {
       const int d = wave_t - SHINE_HALF_MS - i * SHINE_STEP_MS;   // < 0: wave not here yet
-      uint16_t c = d >= SHINE_HALF_MS ? COLOR_TEXT : COLOR_SHINE_DIM;
+      uint16_t c = d >= SHINE_HALF_MS ? text : COLOR_SHINE_DIM;
       if (d > -SHINE_HALF_MS && d <= 0) {
         c = blend565(COLOR_SHINE_DIM, COLOR_SHINE, 255 + d * 255 / SHINE_HALF_MS);
       } else if (d > 0 && d < SHINE_HALF_MS) {
-        c = blend565(COLOR_SHINE, COLOR_TEXT, d * 255 / SHINE_HALF_MS);
+        c = blend565(COLOR_SHINE, text, d * 255 / SHINE_HALF_MS);
       }
       canvas->setTextColor(c);
       canvas->print(label[i]);
     }
   } else {
-    canvas->setTextColor(COLOR_TEXT);
+    canvas->setTextColor(text);
     canvas->print(label);
   }
 }

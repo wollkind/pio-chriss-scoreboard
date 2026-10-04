@@ -28,6 +28,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
@@ -52,9 +53,29 @@
 #else
 #include "secrets.example.h"
 #endif
+#ifndef WIFI_NETWORKS
+#define WIFI_NETWORKS { { WIFI_SSID, WIFI_PASSWORD } }   // older secrets.h: a single network
+#endif
 #ifndef OTA_PASSWORD
 #define OTA_PASSWORD ""   // empty: anyone on the network can flash the panel; set one in secrets.h
 #endif
+
+struct WifiNetwork {
+  const char *ssid;
+  const char *password;
+};
+static const WifiNetwork WIFI_LIST[] = WIFI_NETWORKS;
+static WiFiMulti g_wifi;   // joins the strongest network from WIFI_LIST
+
+static bool wifiConfigured()
+{
+  for (const WifiNetwork &n : WIFI_LIST) {
+    if (n.ssid && n.ssid[0]) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // ---- Hardware ----------------------------------------------------------------------
 #define PANEL_W            64
@@ -755,6 +776,7 @@ static void fetchTask(void *)
   bool have_state = false;
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
+      g_wifi.run();   // scans and joins the strongest known network; blocks up to 5 s
       vTaskDelay(pdMS_TO_TICKS(2000));
       continue;
     }
@@ -1306,7 +1328,7 @@ static void drawScreen(uint32_t now)
   canvas->setFont(nullptr);
   canvas->setTextSize(1);
 
-  if (strlen(WIFI_SSID) == 0) {
+  if (!wifiConfigured()) {
     drawStatus("SET WIFI", COLOR_WARN, "secrets.h", COLOR_DIM);
     return;
   }
@@ -1560,7 +1582,7 @@ static void serviceNetwork()
 {
   static bool started = false;
   if (!started) {
-    if (strlen(WIFI_SSID) == 0 || WiFi.status() != WL_CONNECTED) {
+    if (!wifiConfigured() || WiFi.status() != WL_CONNECTED) {
       return;
     }
     ArduinoOTA.setHostname(HOSTNAME);
@@ -1627,14 +1649,18 @@ void setup()
   canvas = new GFXcanvas16(PANEL_W, PANEL_H);
   canvas->setTextWrap(false);
 
-  if (strlen(WIFI_SSID) > 0) {
+  if (wifiConfigured()) {
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(HOSTNAME);
     WiFi.setAutoReconnect(true);
     // No modem sleep: with it, every reply waits for the access point's next beacon, which made
     // OTA (1 KB per round trip) crawl.
     WiFi.setSleep(false);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    for (const WifiNetwork &n : WIFI_LIST) {
+      if (n.ssid && n.ssid[0]) {
+        g_wifi.addAP(n.ssid, n.password);
+      }
+    }
     xTaskCreatePinnedToCore(fetchTask, "fetch", 12288, nullptr, 1, &g_fetch_task, 0);
   }
   g_startup_ms = millis();

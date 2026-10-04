@@ -95,9 +95,10 @@ Open points:
 
 ## Setup
 
-1. Copy `src/secrets.example.h` to `src/secrets.h` (git-ignored) and fill in the WiFi SSID and password. Optionally set `OTA_PASSWORD`.
+1. Copy `src/secrets.example.h` to `src/secrets.h` (git-ignored) and list every WiFi network the panel may use in `WIFI_NETWORKS` (`{ "SSID", "password" }` per entry). Optionally set `OTA_PASSWORD`.
    - The board needs a WiFi network with internet access: it fetches points and possession itself.
-   - There is no setup screen and no access-point mode. Changing networks means editing `secrets.h` and reflashing.
+   - At startup and after a dropped connection the board scans and joins the strongest listed network, so home, travel and hotspot networks can all be listed at once. An older `secrets.h` with `WIFI_SSID` / `WIFI_PASSWORD` still works.
+   - There is no setup screen and no access-point mode. A network not in the list means editing `secrets.h` and reflashing.
    - A phone hotspot works. The board then uses the phone's cellular data, roughly 30 MB per hour, almost all of it the ESPN scoreboard. Anyone using the picker page has to join the same hotspot.
 2. Build and flash over USB:
    ```

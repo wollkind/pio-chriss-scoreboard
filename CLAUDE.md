@@ -22,6 +22,7 @@ User-facing description, data format and web API: `README.md`. This file holds t
   - then waits `POLL_MS` (30 s), or until `xTaskNotifyGive` from a POST
 - **Shared state** (`g_players`, `g_count`, `g_scoring`, season/week) is guarded by the `g_lock` mutex.
   - The task snapshots the roster, fetches without the lock, and writes back only if `g_generation` hasn't changed. A save during a round therefore discards that round's results.
+- **WiFi:** `WiFiMulti` with every entry of `WIFI_NETWORKS` (`secrets.h`; falls back to `WIFI_SSID`/`WIFI_PASSWORD`). `fetchTask` calls `g_wifi.run()` (scan, join strongest, blocks up to 5 s) while disconnected. Multi-network switching not yet seen on hardware.
 - **Persistence:** the config is stored as JSON in NVS (`Preferences`, namespace `scoreboard`, key `config`).
 - **mDNS:** `ArduinoOTA.begin()` starts mDNS with `HOSTNAME`. `MDNS.addService("http", ...)` is called after it, on the same responder.
 
@@ -141,3 +142,4 @@ About 9 s, drawn in `loop()` while WiFi connects. The web server and OTA keep ru
 - **v0.6.1:** a touchdown scene per kind (rush, pass, catch, defense). "Run" renamed "Rush". Upcoming games `AWY - HOM` instead of `AWY@HOM`.
 - **v0.7:** name shine on the scoreboard before each update screen (blink + wave). Gains under 1.0 get only a rainbow name (letter by letter, `RAINBOW_*`). Losses flash red. Hollow football outside the red zone. Points roll like an odometer. Startup animation off (`STARTUP_ANIMATION 0`). OTA upload uses an empty password.
 - **v0.7.1:** players whose game is final are drawn dimmed (`COLOR_DIM` text and points, darker position bar). Startup animation back on (`STARTUP_ANIMATION 1`).
+- **v0.7.2:** several WiFi networks in `secrets.h` (`WIFI_NETWORKS`); joins the strongest in range.
